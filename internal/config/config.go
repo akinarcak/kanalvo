@@ -12,7 +12,16 @@ type Config struct {
 	// HTTPAddr, izleyicilere açık dinleme adresidir.
 	HTTPAddr string
 	// HooksAddr, SRS yetki sorgularının dinlendiği adrestir; dışarıya açılmamalıdır.
-	HooksAddr   string
+	HooksAddr string
+	// PanelAddr, yönetim panelinin dinlendiği adrestir. İzleyici uçlarından ayrıdır; böylece
+	// panel yalnızca HTTPS vekilinin arkasından ya da belirli ağlardan erişilebilir kılınabilir.
+	PanelAddr       string
+	PanelSessionTTL time.Duration
+	// PanelInsecureCookie, panel çerezinin HTTP üzerinden de gönderilmesine izin verir.
+	// Yalnızca yerel geliştirmede açılır.
+	PanelInsecureCookie bool
+	// IngestBaseURL, yayıncıların OBS'e yazacağı sunucu adresidir (ör. rtmp://yayin.example.com/live).
+	IngestBaseURL string
 	DatabaseURL string
 	TokenKey    []byte
 	HookSecret  string
@@ -42,6 +51,9 @@ func Load(getenv func(string) string) (Config, error) {
 	c := Config{
 		HTTPAddr:           getenv("HTTP_ADDR"),
 		HooksAddr:          getenv("HOOKS_ADDR"),
+		PanelAddr:          getenv("PANEL_ADDR"),
+		PanelSessionTTL:    12 * time.Hour,
+		IngestBaseURL:      strings.TrimRight(getenv("INGEST_BASE_URL"), "/"),
 		DatabaseURL:        getenv("DATABASE_URL"),
 		TokenKey:           []byte(getenv("TOKEN_KEY")),
 		HookSecret:         getenv("HOOK_SECRET"),
@@ -62,13 +74,17 @@ func Load(getenv func(string) string) (Config, error) {
 	if c.HooksAddr == "" {
 		c.HooksAddr = ":8001"
 	}
-	if c.HooksAddr == c.HTTPAddr {
-		return Config{}, fmt.Errorf("HOOKS_ADDR ile HTTP_ADDR aynı olamaz: %q", c.HTTPAddr)
+	if c.PanelAddr == "" {
+		c.PanelAddr = ":8002"
+	}
+	if c.HooksAddr == c.HTTPAddr || c.PanelAddr == c.HTTPAddr || c.PanelAddr == c.HooksAddr {
+		return Config{}, fmt.Errorf("HTTP_ADDR, HOOKS_ADDR ve PANEL_ADDR birbirinden farklı olmalı")
 	}
 	for name, dst := range map[string]*time.Duration{
 		"TOKEN_TTL":            &c.TokenTTL,
 		"HLS_TOKEN_TTL":        &c.HLSTokenTTL,
 		"LOGIN_FAILURE_WINDOW": &c.LoginFailureWindow,
+		"PANEL_SESSION_TTL":    &c.PanelSessionTTL,
 	} {
 		v := getenv(name)
 		if v == "" {
@@ -87,12 +103,19 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 		c.LoginMaxFailures = n
 	}
-	if v := getenv("TRUST_PROXY_HEADERS"); v != "" {
+	for name, dst := range map[string]*bool{"TRUST_PROXY_HEADERS": &c.TrustProxyHeaders, "PANEL_INSECURE_COOKIE": &c.PanelInsecureCookie} {
+		v := getenv(name)
+		if v == "" {
+			continue
+		}
 		b, err := strconv.ParseBool(v)
 		if err != nil {
-			return Config{}, fmt.Errorf("TRUST_PROXY_HEADERS true veya false olmalı: %q", v)
+			return Config{}, fmt.Errorf("%s true veya false olmalı: %q", name, v)
 		}
-		c.TrustProxyHeaders = b
+		*dst = b
+	}
+	if u, err := url.Parse(c.IngestBaseURL); err != nil || (u.Scheme != "rtmp" && u.Scheme != "rtmps") || u.Host == "" {
+		return Config{}, fmt.Errorf("INGEST_BASE_URL rtmp:// adresi olmalı: %q", c.IngestBaseURL)
 	}
 	if c.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL boş olamaz")

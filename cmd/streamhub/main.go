@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,6 +23,9 @@ import (
 	"streamhub/internal/hlsgw"
 	"streamhub/internal/hooks"
 	"streamhub/internal/httpserve"
+	"streamhub/internal/panelapi"
+	"streamhub/internal/panelui"
+	"streamhub/internal/passhash"
 	"streamhub/internal/play"
 	"streamhub/internal/ratelimit"
 	"streamhub/internal/reconcile"
@@ -47,9 +51,10 @@ func main() {
 		"serve":             func(ctx context.Context, _ []string) error { return serve(ctx) },
 		"seed-dev":          func(ctx context.Context, _ []string) error { return seedDev(ctx) },
 		"set-tenant-status": setTenantStatus,
+		"create-admin":      createAdmin,
 	}
 	if len(os.Args) < 2 || commands[os.Args[1]] == nil {
-		fmt.Fprintln(os.Stderr, "kullanım: streamhub serve | seed-dev | set-tenant-status <yayıncı no> <active|suspended>")
+		fmt.Fprintln(os.Stderr, "kullanım: streamhub serve | seed-dev | create-admin <e-posta> | set-tenant-status <yayıncı no> <active|suspended>")
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -86,12 +91,26 @@ func serve(ctx context.Context) error {
 	hooks.New(st, signer, sessions, time.Now).Register(internal, cfg.HookSecret)
 	mux := publicMux(st, signer, sessions, cfg, publicBase, srsHLS)
 
+	// Panel ayrı bir adreste dinlenir ve kendi hatalı giriş sayacını kullanır.
+	panel := http.NewServeMux()
+	panelapi.New(st, sessions, ratelimit.New(cfg.LoginMaxFailures, cfg.LoginFailureWindow, time.Now), panelapi.Config{
+		SessionTTL:        cfg.PanelSessionTTL,
+		SecureCookie:      !cfg.PanelInsecureCookie,
+		TrustProxyHeaders: cfg.TrustProxyHeaders,
+		IngestURL:         cfg.IngestBaseURL,
+		PublicBaseURL:     cfg.PublicBaseURL,
+		Idle:              hlsSessionIdle,
+	}).Register(panel)
+	panel.Handle("/", panelui.New(panelui.Embedded()))
+
 	go sessions.Run(ctx, enforceInterval)
+	go expirePanelSessions(ctx, st)
 
 	go reconcile.New(st, cfg.SRSAPIURL, reconcileGrace).Run(ctx, reconcileInterval)
 
-	log.Printf("streamhub dinliyor: izleyiciler %s, SRS sorguları %s", cfg.HTTPAddr, cfg.HooksAddr)
-	return httpserve.Run(ctx, shutdownGrace, httpserve.New(cfg.HTTPAddr, mux), httpserve.New(cfg.HooksAddr, internal))
+	log.Printf("streamhub dinliyor: izleyiciler %s, SRS sorguları %s, panel %s", cfg.HTTPAddr, cfg.HooksAddr, cfg.PanelAddr)
+	return httpserve.Run(ctx, shutdownGrace,
+		httpserve.New(cfg.HTTPAddr, mux), httpserve.New(cfg.HooksAddr, internal), httpserve.New(cfg.PanelAddr, panel))
 }
 
 // publicMux, izleyicilere açık tüm uçları tek yönlendiricide toplar.
@@ -139,6 +158,43 @@ func seedDev(ctx context.Context) error {
 		"username":      username,
 		"password":      password,
 	})
+}
+
+// expirePanelSessions, süresi dolan panel oturumlarını saatte bir siler.
+func expirePanelSessions(ctx context.Context, st *store.Store) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		if _, err := st.DeleteExpiredPanelSessions(ctx); err != nil && ctx.Err() == nil {
+			log.Printf("panel oturumları temizlenemedi: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// createAdmin, bir platform yöneticisi oluşturur ve rastgele şifresini bir kez yazar.
+func createAdmin(ctx context.Context, args []string) error {
+	if len(args) != 1 || !strings.Contains(args[0], "@") {
+		return errors.New("kullanım: create-admin <e-posta>")
+	}
+	st, err := openStore(ctx, os.Getenv("DATABASE_URL"))
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	password := randomHex(10)
+	hash, err := passhash.Hash(password)
+	if err != nil {
+		return err
+	}
+	if _, err := st.CreateAdmin(ctx, args[0], hash); err != nil {
+		return fmt.Errorf("yönetici oluşturulamadı (e-posta kullanılıyor olabilir): %w", err)
+	}
+	return json.NewEncoder(os.Stdout).Encode(map[string]string{"email": args[0], "password": password})
 }
 
 // setTenantStatus, bir yayıncıyı askıya alır veya yeniden etkinleştirir. Askıya alınan yayıncının

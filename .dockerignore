@@ -3,3 +3,6 @@
 .superpowers
 docs
 e2e
+web/node_modules
+internal/panelui/dist/assets
+internal/panelui/dist/index.html

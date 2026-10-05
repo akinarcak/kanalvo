@@ -170,6 +170,12 @@ kanalları çevrimdışı yapar; SRS'e ulaşılamazsa hiçbir kanala dokunmaz.
 
 - Her panel isteğinde yayıncı kimliği sunucu tarafında oturumdan alınır;
   istekle gelen yayıncı kimliğine güvenilmez.
+- Panel, izleyici uçlarından ayrı bir portta (varsayılan 8002) dinlenir.
+  Çerezi `HttpOnly`, `SameSite=Strict` ve `Secure` olur; değişiklik yapan istekler özel bir
+  başlık taşımak zorundadır. Şifre değişince, sıfırlanınca veya yayıncı askıya
+  alınınca eski oturumlar kapanır.
+- Yayıncının panel şifresini sistem üretir ve yöneticiye bir kez gösterir;
+  yayıncılar silinmez, askıya alınır.
 - İmzalı adres izleyici, kanal ve son geçerlilik zamanını içerir, HMAC-SHA256
   ile imzalanır. Başlamış `.ts` izlemesi süre dolunca kesilmez; HLS izlemesi
   imza süresi (varsayılan 6 saat) dolunca oynatıcının adresi yeniden

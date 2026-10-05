@@ -2,3 +2,7 @@
 /bin/
 *.bin
 .superpowers/
+web/node_modules/
+# Derlenmiş panel arayüzü depoya girmez; yalnızca yer tutucu (.gitkeep) kalır.
+internal/panelui/dist/*
+!internal/panelui/dist/.gitkeep

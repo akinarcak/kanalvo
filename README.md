@@ -9,13 +9,32 @@ OBS ile yayın açılan, Xtream uyumlu oynatıcılardan izlenen çok kiracılı 
 
 | Servis | Görevi | Dış port |
 |---|---|---|
-| `api` | Xtream yayın adresleri ve HLS geçidi (8000); SRS yetki sorguları (8001, yalnızca iç ağ) | 8000 |
+| `api` | Xtream yayın adresleri ve HLS geçidi (8000); SRS yetki sorguları (8001, yalnızca iç ağ); yönetim paneli (8002) | 8000, 8002 |
 | `srs` | OBS'ten RTMP yayını alır, HLS üretir | 1935 |
 | `srs-ts` | Kesintisiz MPEG-TS (`.ts`) dağıtır | 8081 |
 | `postgres` | Veritabanı | yalnızca 127.0.0.1:5432 |
 
 `srs` servisinin HTTP portu bilerek dışarıya açılmaz: SRS, HLS parçalarını denetimsiz sunar.
 HLS izleyiciye yalnızca `api` içindeki `/hls/<imza>/…` geçidinden verilir.
+
+## Yönetim paneli
+
+Panel `http://localhost:8002` adresinde açılır. İlk yöneticiyi komutla oluşturun; şifresi yalnızca bir kez yazılır:
+
+```bash
+docker compose exec -T api streamhub create-admin siz@ornek.com
+```
+
+- **Yönetici** yayıncı ekler, kotalarını belirler, askıya alır ve panel şifresini sıfırlar.
+- **Yayıncı** kendi kanallarını, kategorilerini ve izleyicilerini yönetir; OBS ayarlarını ve izleyicinin
+  giriş bilgilerini kopyalar; süren izlemeleri görür.
+
+Sunucuda paneli (8002) yalnızca HTTPS sunan bir vekilin arkasından yayınlayın ve `.env` içindeki
+`PANEL_INSECURE_COOKIE` satırını silin; aksi halde giriş çerezi şifresiz bağlantıdan da gönderilir.
+
+Arayüzün kaynağı `web/` klasöründedir ve Docker imajı oluşturulurken derlenir. Arayüz üzerinde
+çalışırken `cd web && npm install && npm run dev` ile geliştirme sunucusunu açabilirsiniz; API
+istekleri çalışan panele aktarılır.
 
 ## Yerelde çalıştırma
 
@@ -65,6 +84,9 @@ Telefondaki veya televizyondaki bir oynatıcıdan denemek için `.env` içindeki
 | `LOGIN_MAX_FAILURES`, `LOGIN_FAILURE_WINDOW` | Bir IP bu sürede bu kadar hatalı giriş yaparsa süre bitene kadar 429 alır | 20, 5m |
 | `TRUST_PROXY_HEADERS` | İstemci IP'sini `X-Forwarded-For` başlığının son değerinden alır. Yalnızca API bu başlığı yazan bir vekilin arkasındayken açın; aksi halde giriş sınırı atlatılabilir | false |
 | `TOKEN_TTL`, `HLS_TOKEN_TTL` | `.ts` ve HLS imzalarının ömrü | 5m, 6h |
+| `INGEST_BASE_URL` | Yayıncıların OBS'e yazacağı sunucu adresi; panelde gösterilir | zorunlu |
+| `PANEL_SESSION_TTL` | Panel oturumunun ömrü | 12h |
+| `PANEL_INSECURE_COOKIE` | Panel çerezinin HTTP üzerinden de gönderilmesine izin verir; yalnızca yerel geliştirme için | false |
 
 `.env.example` içindeki değerler yalnızca yerel geliştirme içindir; sunucuda `TOKEN_KEY` ve
 `HOOK_SECRET` için yeni rastgele değerler üretin ve `EDGE_*` adreslerini dış alan adınıza göre ayarlayın.

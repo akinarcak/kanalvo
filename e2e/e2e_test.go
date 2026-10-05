@@ -118,10 +118,14 @@ func startPublisher(t *testing.T, s seed) {
 		fmt.Sprintf("rtmp://srs/live/%d?secret=%s", s.ChannelID, s.StreamSecret))
 }
 
-func publisherRunning() bool {
-	out, _ := exec.Command("docker", "ps", "-q", "--filter", "name="+pubName).Output()
+func publisherRunning() bool { return containerRunning(pubName) }
+
+func containerRunning(name string) bool {
+	out, _ := exec.Command("docker", "ps", "-q", "--filter", "name="+name).Output()
 	return strings.TrimSpace(string(out)) != ""
 }
+
+func stopContainer(name string) { exec.Command("docker", "rm", "-f", name).Run() }
 
 // watch, bir .ts yayınını bağlantı kopana kadar okur. started, ilk veri gelince; ended,
 // bağlantı sunucu tarafından kesilince kapanır.
