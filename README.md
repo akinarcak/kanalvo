@@ -25,7 +25,8 @@ Panel `http://localhost:8002` adresinde açılır. İlk yöneticiyi komutla olu�
 docker compose exec -T api streamhub create-admin siz@ornek.com
 ```
 
-- **Yönetici** yayıncı ekler, kotalarını belirler, askıya alır ve panel şifresini sıfırlar.
+- **Yönetici** yayıncı ekler, kotalarını belirler, askıya alır ve panel şifresini sıfırlar; izleyicilerin
+  dağıtıldığı sunucuları yönetir.
 - **Yayıncı** kendi kanallarını, kategorilerini ve izleyicilerini yönetir; OBS ayarlarını ve izleyicinin
   giriş bilgilerini kopyalar; süren izlemeleri görür.
 
@@ -60,6 +61,32 @@ docker compose exec -T api streamhub seed-dev
 Telefondaki veya televizyondaki bir oynatıcıdan denemek için `.env` içindeki `PUBLIC_BASE_URL`,
 `EDGE_TS_BASE_URL` ve `EDGE_HLS_BASE_URL` adreslerinde `localhost` yerine bilgisayarın ağ adresini yazın.
 
+## İkinci sunucu (edge) ekleme
+
+İzleyiciler birden fazla sunucuya dağıtılabilir. Ana sunucudaki dağıtım "Yerel" adıyla hazır gelir;
+yeni bir sunucu eklemek için:
+
+1. Panelde **Sunucular** sayfasında sunucuyu ekleyin: bir ad, izleyicilerin ulaşacağı adres
+   (ör. `http://edge1.example.com`) ve sunucunun IP adresi.
+2. Yeni sunucuya depodaki `deploy/edge` klasörünü kopyalayın. Panelin gösterdiği üç satırı
+   (`CONTROL_URL`, `EDGE_KEY`, `ORIGIN_RTMP`) o klasörde `.env` dosyasına yazın.
+3. Sunucuda `docker compose up -d` çalıştırın. Yaklaşık 10 saniye içinde panelde "Sağlıklı" görünür
+   ve izleyici almaya başlar.
+
+Bilinmesi gerekenler:
+
+- Yeni sunucu, ana sunucunun izleyici portuna (8000) ve RTMP portuna (1935) ulaşabilmelidir; ana
+  sunucu da yeni sunucunun izleyici portuna ulaşabilmelidir. Başka port açmak gerekmez.
+- İzleyiciler sağlıklı ve etkin sunuculara ağırlıklarıyla orantılı dağıtılır. Bir sunucu 15 saniye
+  yanıt vermezse yeni izleyici almaz; yanıt verince yeniden alır.
+- Bir sunucuyu kaldırmadan önce devre dışı bırakın ve izlemelerinin bitmesini bekleyin: silinen
+  sunucuda süren izlemeler kesilmez.
+- Sunucunun anahtarı ve ana sunucuyla arasındaki denetim trafiği HTTP ile açık taşınır. İki sunucu
+  arasında özel ağ kullanın ya da `CONTROL_URL` ve sunucunun "yönetim adresi" için HTTPS adresleri
+  verin (SRS'in HTTPS adresine sorgu göndermesi bu projede denenmedi).
+- Yeni sunucuda veritabanı ya da imza anahtarı bulunmaz; her izlemeyi ana sunucu yetkilendirir. Ana
+  sunucu durursa hiçbir sunucudan yeni izleme başlatılamaz.
+
 ## Bağlantı limiti ve askıya alma
 
 - Her izleyicinin bir bağlantı limiti vardır (`seed-dev` ile oluşturulan izleyicide 1). Limit doluyken
@@ -84,7 +111,7 @@ Telefondaki veya televizyondaki bir oynatıcıdan denemek için `.env` içindeki
 | Değişken | Anlamı | Varsayılan |
 |---|---|---|
 | `PUBLIC_BASE_URL` | Oynatıcıya girilen sunucu adresi; M3U adresleri bundan üretilir | zorunlu |
-| `EDGE_TS_BASE_URL`, `EDGE_HLS_BASE_URL` | İzleyicinin yönlendirildiği `.ts` ve HLS adresleri | zorunlu |
+| `EDGE_TS_BASE_URL`, `EDGE_HLS_BASE_URL` | Ana sunucunun ("Yerel" edge) izleyiciye verdiği `.ts` ve HLS adresleri | zorunlu |
 | `LOGIN_MAX_FAILURES`, `LOGIN_FAILURE_WINDOW` | Bir IP bu sürede bu kadar hatalı giriş yaparsa süre bitene kadar 429 alır | 20, 5m |
 | `TRUST_PROXY_HEADERS` | İstemci IP'sini `X-Forwarded-For` başlığının son değerinden alır. Yalnızca API bu başlığı yazan bir vekilin arkasındayken açın; aksi halde giriş sınırı atlatılabilir | false |
 | `TOKEN_TTL`, `HLS_TOKEN_TTL` | `.ts` ve HLS imzalarının ömrü | 5m, 6h |
@@ -111,3 +138,6 @@ Uçtan uca test (tüm servisler çalışırken; sahte yayını FFmpeg kapsayıc�
 docker compose up -d --build --wait
 go test -tags e2e -count=1 ./e2e/
 ```
+
+Uçtan uca test, ikinci sunucuyu `deploy/edge` dosyalarıyla aynı makinede ayrı bir Compose projesi
+olarak (8090 portunda) başlatır ve sonunda kaldırır.

@@ -1,7 +1,7 @@
 # StreamHub — Tasarım Dokümanı
 
 Tarih: 2026-10-05
-Durum: İnceleme bekliyor
+Durum: Uygulandı (Plan 1-5)
 
 ## 1. Amaç
 
@@ -62,7 +62,7 @@ Bu yaklaşımın dayandığı üç varsayım SRS 5.0.225'e karşı ölçüldü
 | Kontrol API'si | Xtream uçları, HLS geçidi, panel API'si, SRS yetki sorguları, imzalı adres üretimi | Go ile yazılır |
 | Panel | Yönetici ve yayıncı ekranları | React ile yazılır, API programına gömülür |
 | PostgreSQL | Kalıcı kayıtlar ve aktif oturumlar | Hazır |
-| Edge | Yayını izleyiciye dağıtır (SRS edge + nginx) | Hazır |
+| Edge | Yayını izleyiciye dağıtır. Yerel edge, kontrol sunucusundaki `srs-ts` ve HLS geçididir; uzak edge, edge kipinde bir SRS ve önündeki nginx'tir | Hazır |
 | Ters vekil | TLS ve alan adı yönlendirmesi (Caddy) | Hazır |
 
 - Tüm bileşenler Docker Compose ile tek komutta kalkar.
@@ -70,6 +70,9 @@ Bu yaklaşımın dayandığı üç varsayım SRS 5.0.225'e karşı ölçüldü
   servis ve ayrı bir kayıttır.
 - Yük dağıtımı ayrı bir ürün değildir: API, izleme isteğini seçtiği edge'e
   yönlendirir.
+- Uzak edge'de veritabanı, imza anahtarı ya da kendi kodumuz bulunmaz. Edge
+  yalnızca kendi anahtarını bilir; her izlemeyi kontrol sunucusu yetkilendirir.
+  Dağıtım dosyaları `deploy/edge` klasöründedir.
 
 ### Kontrol API'sinin iç birimleri
 
@@ -78,8 +81,8 @@ Bu yaklaşımın dayandığı üç varsayım SRS 5.0.225'e karşı ölçüldü
 | `store` | PostgreSQL erişimi; her sorgu yayıncı kimliğiyle sınırlanır | PostgreSQL |
 | `auth` | Panel girişi, oturum çerezi, rol kontrolü | `store` |
 | `token` | İmzalı izleme adresi üretme ve doğrulama | Yok |
-| `balancer` | Sağlıklı edge'ler arasından ağırlığa göre seçim | `store` |
-| `session` | Oturum açma/kapama, limit hesabı, eskiyen oturum temizliği | `store` |
+| `balancer` | Sağlıklı edge'ler arasından ağırlığa göre seçim; edge'i anahtarından tanıma; origin'den çekme adresi denetimi | `store` |
+| `session` | Oturum açma/kapama, limit hesabı, eskiyen oturum temizliği; her edge için bağlantı kesme, eşitleme ve sağlık sinyali | `store` |
 | `xtream` | Xtream uçları ve yanıt biçimleri | `store`, `token`, `balancer` |
 | `hooks` | SRS'in yayın ve `.ts` izleme sorguları | `store`, `token`, `session` |
 | `hlsgw` | HLS geçidi: `/hls/<imza>/<dosya>` isteklerini doğrular ve SRS'e aktarır | `store`, `token`, `session` |
@@ -95,7 +98,7 @@ Bu yaklaşımın dayandığı üç varsayım SRS 5.0.225'e karşı ölçüldü
 | Kategori | Yayıncı, ad, sıra |
 | Kanal | Yayıncı, kategori, ad, logo, gizli yayın anahtarı, durum (yayında/çevrimdışı), son yayın zamanı |
 | İzleyici | Yayıncı, kullanıcı adı, şifre, bitiş tarihi, bağlantı limiti, durum |
-| Edge | Ad, adres, durum, ağırlık, son sağlık sinyali |
+| Edge | Ad, izleyici adresi, yönetim adresi, anahtar, çekme adresi, durum, ağırlık, son sağlık sinyali |
 | Oturum | İzleyici, kanal, edge, IP, başlangıç, son görülme |
 
 Kurallar:
@@ -142,6 +145,29 @@ giden hiçbir adreste yer almaz.
      istekte doğrulandığı için bu imzanın ömrü uzundur (varsayılan 6 saat);
      askıya alma ve yayının bitmesi birkaç saniye içinde etkili olur.
 
+### Edge
+
+Kontrol sunucusundaki dağıtım "yerel" edge kaydıdır: kurulumla birlikte gelir,
+silinemez, adresleri ayarlardan okunur. Yönetici panelden uzak edge ekler;
+kayıt sırasında edge'in anahtarı üretilir.
+
+- **Yayının edge'e ulaşması:** Uzak edge, ilk izleyici geldiğinde yayını
+  origin'den RTMP ile çeker, son izleyici gidince bırakır. Origin bu çekmeyi
+  yalnızca kayıtlı ve etkin bir edge'in çekme adresinden kabul eder.
+- **`.ts`:** Edge'in SRS'i izleme başlarken ve biterken kontrol sunucusuna
+  sorar (`/edge/<anahtar>/hooks/…`). Kurallar yerel edge ile aynıdır; oturum o
+  edge'e yazılır.
+- **HLS:** Edge'in nginx'i her isteği kontrol sunucusuna sorar
+  (`/edge/hls/<imza>/<dosya>`, anahtar başlıkta). Kabul edilirse dosyayı kendi
+  önbelleğinden verir; önbellekte yoksa kontrol sunucusundan bir kez çeker
+  (çalma listesi 1 saniye, parça 60 saniye saklanır). Yetki her istekte
+  merkezde kalır, bant genişliği edge'den harcanır.
+- **Sağlık sinyali:** Kontrol sunucusu her edge'in bağlantı listesini 5
+  saniyede bir sorar (oturum eşitlemesi için zaten gerekir). Son 15 saniyede
+  yanıt veren edge sağlıklıdır. Yerel edge'in HLS'i API'nin içinden verildiği
+  için `.ts` dağıtıcısının durumundan bağımsız, her zaman kullanılabilir.
+- **Seçim:** Etkin ve sağlıklı edge'ler arasından ağırlıkla orantılı rastgele.
+
 SRS çöker veya yeniden başlarsa "yayın bitti" bildirimi gelmez. API bu
 yüzden SRS'in yayın listesini düzenli olarak sorar ve listede olmayan
 kanalları çevrimdışı yapar; SRS'e ulaşılamazsa hiçbir kanala dokunmaz.
@@ -163,7 +189,7 @@ kanalları çevrimdışı yapar; SRS'e ulaşılamazsa hiçbir kanala dokunmaz.
 
 | Rol | Yapabildikleri |
 |---|---|
-| Yönetici | Yayıncı oluşturma, askıya alma, kota belirleme; edge kaydetme ve durumunu görme; platform geneli canlı kanal ve oturum sayıları |
+| Yönetici | Yayıncı oluşturma, askıya alma, kota belirleme; edge kaydetme, ağırlık verme, devre dışı bırakma, silme ve durumunu görme; platform geneli canlı kanal ve oturum sayıları |
 | Yayıncı | Kategori ve kanal yönetimi, OBS ayarlarını görme, yayın anahtarı yenileme, izleyici oluşturma/askıya alma/şifre yenileme, kendi canlı oturumlarını görme |
 
 ## 6. Güvenlik
@@ -194,6 +220,16 @@ kanalları çevrimdışı yapar; SRS'e ulaşılamazsa hiçbir kanala dokunmaz.
 - Xtream uçlarında IP başına hatalı giriş sınırı uygulanır.
 - SRS'in API'ye yaptığı sorgular yalnızca iç ağdan ve paylaşılan sır ile
   kabul edilir.
+- Uzak edge kendini anahtarıyla tanıtır: SRS sorgularında adres yolunda (SRS
+  başlık ekleyemez), nginx isteklerinde `X-Edge-Key` başlığında. Bu uçlar
+  izleyicilere açık portta dinlenir; anahtarsız istek reddedilir.
+- İzleyicinin IP adresi için edge'den gelen başlığa yalnızca geçerli edge
+  anahtarıyla gelen isteklerde güvenilir.
+- Edge'in SRS yönetim API'si nginx'te anahtarla korunan bir yoldadır; SRS'in
+  portları dışarıya açılmaz.
+- Edge anahtarı ve denetim trafiği HTTP üzerinden açık taşınır. Kontrol
+  sunucusu ile edge arasında özel ağ ya da HTTPS kullanılmalıdır; edge
+  kaydındaki yönetim adresi bunun için izleyici adresinden ayrı tutulabilir.
 - Panel yalnızca HTTPS üzerinden sunulur. Xtream uçları, HTTPS desteklemeyen
   eski oynatıcılar için HTTP üzerinden de erişilebilir.
 
@@ -214,7 +250,10 @@ kanalları çevrimdışı yapar; SRS'e ulaşılamazsa hiçbir kanala dokunmaz.
 | Sağlıklı edge yok | 503 |
 | "İzleme bitti" bildirimi kayboldu | `.ts` oturumları 5 saniyede bir SRS'in bağlantı listesiyle eşitlenir; SRS'e ulaşılamazsa oturum silinmez |
 | İzleyici askıya alındı veya süresi doldu | Süren `.ts` izlemesi birkaç saniye içinde kesilir; HLS bir sonraki istekte reddedilir |
-| Origin'e RTMP ile izleme denemesi | Geçerli imzayla bile reddedilir |
+| Origin'e RTMP ile izleme denemesi | Kayıtlı ve etkin bir edge'in çekme adresi dışındaki her adresten, geçerli imzayla bile reddedilir |
+| Edge devre dışı bırakıldı | Yeni izleyici yönlendirilmez; süren izlemeler devam eder. Edge origin'den yeni çekme başlatamaz |
+| Edge silindi | Oturum kayıtları silinir; edge'de süren izlemeler kesilmez, yeni izleme yetkilendirilemez |
+| Geçersiz edge anahtarıyla istek | İzleme sorgusu 404, HLS uçları 403 |
 | Kanal veya izleyici silindi, yayın anahtarı ya da izleyici şifresi yenilendi | İlgili yayın ve izlemeler kesilir. Kesme o an başarısız olursa kuyrukta bekler ve yeniden denenir |
 | Çok sayıda eşzamanlı panel girişi | Aynı anda sınırlı sayıda şifre doğrulanır; fazlası 503 alır |
 | Yayıncı askıya alındı | Açık yayınları birkaç saniye içinde kesilir, izleyicileri izleyemez |
@@ -238,7 +277,8 @@ kanalları çevrimdışı yapar; SRS'e ulaşılamazsa hiçbir kanala dokunmaz.
 2. Xtream uçları ve izleyici hesapları.
 3. Yayıncı ayrımı, kotalar, bağlantı limiti, oturum takibi.
 4. Panel: yönetici ve yayıncı ekranları.
-5. Edge kaydı, sağlık sinyali ve yönlendirme; ikinci sunucuyla deneme.
+5. Edge kaydı, sağlık sinyali ve yönlendirme; ikinci sunucuyla deneme
+   (aynı makinede ayrı bir Compose projesi olarak denendi).
 
 ## 10. Sonraki aşamalar (bu dokümanın kapsamı dışında)
 

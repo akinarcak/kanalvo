@@ -64,10 +64,34 @@ HLS çalma listesi (`hls_ctx` kapalıyken beklenen biçim; parça adları görel
 - **Plan 3 (oturum takibi):** `.ts` izlemeleri için SRS `play`/`stop` sorguları
   kullanılabilir. HLS izlemeleri artık geçitten geçtiği için oturum takibi
   geçitte yapılmalı (çalma listesi istekleri yaklaşık 2 saniyede bir gelir).
-- **Plan 5 (edge):** `.ts` için uzak edge'de SRS edge kipi denenmeli; edge'in
-  origin'den çekerken izleyicinin imzasını origin'e taşıyıp taşımadığı ve
-  origin'in `play` sorgusunu nasıl etkilediği ölçülmeli. HLS için edge'de aynı
-  geçit (origin'e önbellekli aktarım) çalışabilir.
+- **Plan 5 (edge):** ölçüldü; bkz. "Edge kipi" bölümü.
+
+## Edge kipi (2026-10-06, Plan 5)
+
+Düzen: origin SRS, edge kipinde ikinci bir SRS (`cluster { mode remote; origin origin:1935; }`,
+`http_remux` açık) ve önünde nginx. Sahte yayın origin'e gönderildi; izleyici nginx üzerinden bağlandı.
+
+| Soru | Gözlenen |
+|---|---|
+| Edge kipindeki SRS kesintisiz `.ts` verir mi | Evet. `/live/1.ts` 200 döndü; ilk bayt ve 188. bayt `47` |
+| Edge, origin'den ne zaman çeker | İlk izleyici gelince. Önce edge'in `play` sorgusu, ardından origin'in `play` sorgusu gelir. Son izleyici gidince origin'de `stop` sorgusu gelir: edge çekmeyi bırakır |
+| Origin, edge'in çekmesini nasıl görür | `play` sorgusunda `ip` edge'in adresi, `tcUrl` `rtmp://edge/live`, `param` çekmeyi tetikleyen izleyicinin parametreleri (`?token=…`) |
+| nginx arkasındaki SRS izleyicinin adresini görür mü | Evet. nginx `X-Real-IP` ve `X-Forwarded-For` başlığını yazınca `play` sorgusunun `ip` alanı izleyicinin adresidir; bağlantı listesindeki `ip` ise nginx'in adresidir |
+| Yönetim API'si nginx arkasından kullanılabilir mi | Evet. `/_srs/api/v1/clients/` başlıkla korunan yoldan listelendi; anahtarsız istek 403 aldı. İzleyici türü yerel dağıtıcıdaki gibi `flv-play` |
+| Origin'de olmayan yayın istenirse | Edge yine origin'e bağlanır (`play` sorgusu gelir); izleyiciye veri gelmez |
+
+Tasarıma etkisi:
+
+- Origin'in `play` sorgusu artık her isteği reddetmez; kaynağın adresi kayıtlı bir edge'in çekme
+  adresiyse kabul eder. İmzaya bakılmaz: edge yeniden bağlanırken ilk izleyicinin süresi dolmuş
+  imzasını gönderebilir.
+- Edge'in SRS'i `X-Real-IP` başlığına güvenir; bu yüzden SRS'in portu dışarıya açılmaz ve başlığı
+  yalnızca nginx yazar.
+- Edge kipindeki SRS HLS üretmez. Edge'de HLS, kontrol sunucusundaki dosyaların nginx önbelleğinden
+  verilmesiyle sağlanır.
+
+Ölçülmeyenler: SRS'in HTTPS adresli sorguları (edge'in `CONTROL_URL` değeri `https://` olduğunda);
+origin ile edge arasındaki bağlantı koptuğunda edge'in yeniden bağlanma davranışı.
 
 ## Uçtan uca doğrulama (2026-10-05)
 
