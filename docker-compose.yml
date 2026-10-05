@@ -30,8 +30,20 @@ services:
       - "host.docker.internal:host-gateway"
     ports:
       - "1935:1935"
-      - "8080:8080"
       - "127.0.0.1:1985:1985"
+
+  srs-ts:
+    image: ossrs/srs:5
+    environment:
+      HOOK_BASE: ${HOOK_BASE}
+    volumes:
+      - ./deploy/srs/srs-ts.conf.tmpl:/conf/srs.conf.tmpl:ro
+    command:
+      - sh
+      - -c
+      - sed "s|__HOOK_BASE__|$$HOOK_BASE|g" /conf/srs.conf.tmpl > /tmp/srs.conf && exec ./objs/srs -c /tmp/srs.conf
+    ports:
+      - "8081:8080"
 
   ffmpeg:
     image: jrottenberg/ffmpeg:6.1-alpine

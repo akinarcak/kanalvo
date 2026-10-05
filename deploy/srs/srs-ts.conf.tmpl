@@ -1,0 +1,24 @@
+# .ts dağıtıcısı: origin'in ilettiği yayını HTTP üzerinden kesintisiz MPEG-TS olarak verir.
+# RTMP portu (1935) dışarıya açılmaz; yalnızca origin bağlanır.
+listen              1935;
+max_connections     1000;
+daemon              off;
+srs_log_tank        console;
+
+http_server {
+    enabled         on;
+    listen          8080;
+    dir             ./objs/nginx/html;
+}
+
+vhost __defaultVhost__ {
+    http_remux {
+        enabled     on;
+        mount       [vhost]/[app]/[stream].ts;
+    }
+    http_hooks {
+        enabled         on;
+        on_play         __HOOK_BASE__/play;
+        on_stop         __HOOK_BASE__/stop;
+    }
+}

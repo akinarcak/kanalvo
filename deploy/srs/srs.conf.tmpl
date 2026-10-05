@@ -1,3 +1,8 @@
+# Origin: OBS yayınını alır, HLS üretir ve yayını .ts dağıtıcısına iletir.
+# SRS aynı sanal sunucuda HLS ile kesintisiz .ts çıkışına izin vermez
+# (bkz. docs/srs-findings.md), bu yüzden .ts çıkışı srs-ts.conf.tmpl içindedir.
+# HTTP portu (8080) dışarıya açılmaz: HLS parçaları SRS'te korumasızdır,
+# izleyiciye yalnızca API'deki /hls geçidi üzerinden verilir.
 listen              1935;
 max_connections     1000;
 daemon              off;
@@ -19,12 +24,12 @@ vhost __defaultVhost__ {
         enabled         on;
         hls_fragment    2;
         hls_window      12;
-        hls_ctx         on;
-        hls_ts_ctx      on;
+        hls_ctx         off;
+        hls_ts_ctx      off;
     }
-    http_remux {
-        enabled     on;
-        mount       [vhost]/[app]/[stream].ts;
+    forward {
+        enabled         on;
+        destination     srs-ts:1935;
     }
     http_hooks {
         enabled         on;
