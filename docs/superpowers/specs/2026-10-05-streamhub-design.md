@@ -153,7 +153,10 @@ kayıt sırasında edge'in anahtarı üretilir.
 
 - **Yayının edge'e ulaşması:** Uzak edge, ilk izleyici geldiğinde yayını
   origin'den RTMP ile çeker, son izleyici gidince bırakır. Origin bu çekmeyi
-  yalnızca kayıtlı ve etkin bir edge'in çekme adresinden kabul eder.
+  yalnızca kayıtlı ve etkin bir edge'in çekme adresinden ve o kanal için
+  üretilmiş bir `.ts` imzasıyla kabul eder (edge, çekmeyi tetikleyen
+  izleyicinin imzasını iletir; yeniden bağlanabilmesi için imzanın süresine
+  bakılmaz).
 - **`.ts`:** Edge'in SRS'i izleme başlarken ve biterken kontrol sunucusuna
   sorar (`/edge/<anahtar>/hooks/…`). Kurallar yerel edge ile aynıdır; oturum o
   edge'e yazılır.
@@ -250,7 +253,8 @@ kanalları çevrimdışı yapar; SRS'e ulaşılamazsa hiçbir kanala dokunmaz.
 | Sağlıklı edge yok | 503 |
 | "İzleme bitti" bildirimi kayboldu | `.ts` oturumları 5 saniyede bir SRS'in bağlantı listesiyle eşitlenir; SRS'e ulaşılamazsa oturum silinmez |
 | İzleyici askıya alındı veya süresi doldu | Süren `.ts` izlemesi birkaç saniye içinde kesilir; HLS bir sonraki istekte reddedilir |
-| Origin'e RTMP ile izleme denemesi | Kayıtlı ve etkin bir edge'in çekme adresi dışındaki her adresten, geçerli imzayla bile reddedilir |
+| Origin'e RTMP ile izleme denemesi | Kayıtlı ve etkin bir edge'in çekme adresi dışındaki her adresten, geçerli imzayla bile reddedilir; edge'in adresinden gelen imzasız istek de reddedilir |
+| Edge 2 dakikadan uzun süredir ulaşılamıyor | `.ts` oturumları silinir; böylece kapanmış bir sunucunun izleyicileri yayıncının kotasını doldurmaz. Yalnızca denetim bağlantısı kopmuşsa edge'de süren izlemeler bağlantı dönünce sayılmaz ve kesilemez |
 | Edge devre dışı bırakıldı | Yeni izleyici yönlendirilmez; süren izlemeler devam eder. Edge origin'den yeni çekme başlatamaz |
 | Edge silindi | Oturum kayıtları silinir; edge'de süren izlemeler kesilmez, yeni izleme yetkilendirilemez |
 | Geçersiz edge anahtarıyla istek | İzleme sorgusu 404, HLS uçları 403 |

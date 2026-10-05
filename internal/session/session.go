@@ -28,6 +28,9 @@ const (
 	// staleKickAge: bu süredir kesilemeyen bir bağlantının kaydı silinir (SRS yeniden başlamış,
 	// bağlantı zaten yok olmuştur).
 	staleKickAge = time.Hour
+	// deadEdgeAfter: bu süredir ulaşılamayan bir edge'in .ts oturumları silinir. Kısa kesintilerde
+	// oturumlar korunur; kapanmış bir sunucunun izleyicileri ise kotayı süresiz doldurmaz.
+	deadEdgeAfter = 2 * time.Minute
 )
 
 // SRS, bir SRS'in yönetim API'sinin kullanılan kısmıdır (bkz. srsapi.Client).
@@ -144,7 +147,8 @@ func (m *Manager) Run(ctx context.Context, interval time.Duration) {
 //  2. edge'in SRS'inde artık olmayan .ts oturumlarını siler ve yanıt veren edge'in sağlık
 //     sinyalini kaydeder,
 //
-// ardından saklama süresi dolan HLS oturum kayıtlarını ve eskimiş kesme kayıtlarını siler.
+// ardından saklama süresi dolan HLS oturum kayıtlarını, eskimiş kesme kayıtlarını ve uzun süredir
+// ulaşılamayan edge'lerin .ts oturumlarını siler.
 // Geçişin tamamı passTimeout ile sınırlıdır.
 func (m *Manager) EnforceOnce(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, passTimeout)
@@ -241,5 +245,6 @@ func (m *Manager) reconcile(ctx context.Context, e store.Edge, srs SRS) error {
 func (m *Manager) expire(ctx context.Context) error {
 	_, hlsErr := m.store.DeleteExpiredHLSSessions(ctx, m.retention)
 	_, kickErr := m.store.DeleteStaleKicks(ctx, staleKickAge)
-	return errors.Join(hlsErr, kickErr)
+	_, edgeErr := m.store.DeleteTSSessionsOfUnreachableEdges(ctx, deadEdgeAfter)
+	return errors.Join(hlsErr, kickErr, edgeErr)
 }

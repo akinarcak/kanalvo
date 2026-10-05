@@ -24,13 +24,14 @@ CREATE UNIQUE INDEX edges_key_idx ON edges (edge_key) WHERE edge_key <> '';
 
 INSERT INTO edges (name, builtin) VALUES ('Yerel', true);
 
--- Oturumlar ve bekleyen kesmeler geçicidir; eski kayıtlar silinir.
-DELETE FROM sessions;
-DELETE FROM pending_kicks;
-
+-- Var olan oturumlar ve bekleyen kesmeler yerel edge'e aittir. Silinmezler: süren .ts izlemeleri
+-- izlenmeye devam etmeli, sonlandırılmış HLS adresleri kapalı kalmalı, bekleyen kesmeler kaybolmamalıdır.
+--
 -- SRS bağlantı kimlikleri yalnızca kendi SRS'inde tekildir: .ts oturumunun kimliği edge ile
 -- birlikte bağlantı kimliğidir. HLS oturumunun kimliği yine yalnızca imzadaki anahtardır.
-ALTER TABLE sessions ADD COLUMN edge_id BIGINT NOT NULL REFERENCES edges (id) ON DELETE CASCADE;
+ALTER TABLE sessions ADD COLUMN edge_id BIGINT REFERENCES edges (id) ON DELETE CASCADE;
+UPDATE sessions SET edge_id = (SELECT id FROM edges WHERE builtin);
+ALTER TABLE sessions ALTER COLUMN edge_id SET NOT NULL;
 DROP INDEX sessions_identity_idx;
 CREATE UNIQUE INDEX sessions_hls_identity_idx ON sessions (session_key) WHERE kind = 'hls';
 CREATE UNIQUE INDEX sessions_ts_identity_idx ON sessions (edge_id, session_key) WHERE kind = 'ts';
@@ -38,6 +39,7 @@ CREATE UNIQUE INDEX sessions_ts_identity_idx ON sessions (edge_id, session_key) 
 -- 'ts' kesmeleri bir edge'e aittir; 'origin' kesmelerinin edge'i yoktur.
 ALTER TABLE pending_kicks
     ADD COLUMN edge_id BIGINT REFERENCES edges (id) ON DELETE CASCADE,
-    ADD CHECK ((target = 'ts') = (edge_id IS NOT NULL)),
     DROP CONSTRAINT pending_kicks_target_client_id_key;
+UPDATE pending_kicks SET edge_id = (SELECT id FROM edges WHERE builtin) WHERE target = 'ts';
+ALTER TABLE pending_kicks ADD CHECK ((target = 'ts') = (edge_id IS NOT NULL));
 CREATE UNIQUE INDEX pending_kicks_identity_idx ON pending_kicks (target, coalesce(edge_id, 0), client_id);

@@ -263,7 +263,7 @@ func TestSecondServerSharesTheViewers(t *testing.T) {
 
 	// 6. Edge'de yetkisiz erişim.
 	for what, u := range map[string]string{
-		"imzasız parça (iç konum)":   edgeURL + "/_segment/" + segFile,
+		"imzasız parça (iç konum)":    edgeURL + "/_segment/" + segFile,
 		"sahte imzayla parça":         edgeURL + "/hls/sahte/" + segFile,
 		"sahte imzayla çalma listesi": fmt.Sprintf("%s/hls/sahte/%d.m3u8", edgeURL, channel.ID),
 		"anahtarsız yönetim API'si":   edgeURL + "/_srs/api/v1/clients/",

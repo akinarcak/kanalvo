@@ -11,6 +11,7 @@ import (
 
 	"streamhub/internal/store"
 	"streamhub/internal/testdb"
+	"streamhub/internal/token"
 )
 
 func (f *fixture) addEdge(name, pullIP string) int64 {
@@ -58,6 +59,21 @@ func TestOriginPlayIsAllowedOnlyFromARegisteredEdgeAddress(t *testing.T) {
 	}
 	if n := f.sessions(f.viewer); n != 0 {
 		t.Fatalf("origin'den çekme oturum açmamalı: %d", n)
+	}
+
+	// Edge'in adresinden gelen istek de bu kanal için bizim imzaladığımız bir .ts imzası taşımalıdır:
+	// edge ile aynı adresi paylaşan biri (aynı NAT, aynı makine) imzasız izleyemez.
+	other := must(f.store.CreateChannel(context.Background(), f.tenant, "diger", "sek2"))
+	hls := "?token=" + f.signer.Sign(token.Claims{Kind: token.KindHLS, ViewerID: f.viewer, ChannelID: f.channel, Session: "a1", ExpiresAt: now.Add(time.Minute)})
+	for what, param := range map[string]string{
+		"imzasız":              "",
+		"sahte imza":           "?token=t.1.1.9999999999.sahte",
+		"başka kanalın imzası": f.tokenFor(f.viewer, other, now.Add(time.Minute)),
+		"HLS imzası":           hls,
+	} {
+		if code := pull("10.0.0.5", param); code != http.StatusForbidden {
+			t.Errorf("edge adresinden %s ile origin'den izlenebildi: %d", what, code)
+		}
 	}
 
 	// Devre dışı bırakılan ya da silinen edge artık çekemez.

@@ -252,7 +252,8 @@ func TestEnforceRemovesSessionsMissingFromSRS(t *testing.T) {
 	ok(t, f.m.OpenTS(ctx, f.local, f.viewer, f.channel, "kayip", "1.1.1.1"))
 	testdb.Exec(t, `UPDATE sessions SET started_at = now() - interval '1 minute'`)
 
-	// SRS'e ulaşılamazsa oturumlara dokunulmaz.
+	// SRS'e kısa süredir ulaşılamıyorsa oturumlara dokunulmaz.
+	ok(t, f.s.MarkEdgeSeen(ctx, f.local))
 	f.ts.listErr = errors.New("SRS yanıt vermiyor")
 	if err := f.m.EnforceOnce(ctx); err == nil {
 		t.Fatal("SRS hatası bildirilmeliydi")
@@ -362,5 +363,36 @@ func TestEvictedConnectionIsKickedOnItsOwnEdge(t *testing.T) {
 	ok(t, f.m.OpenTS(ctx, f.local, f.viewer, f.channel, "yerel-c", "1.1.1.1"))
 	if remoteSRS.got() != "[uzak-c]" || f.ts.got() != "[]" {
 		t.Fatalf("yerinden edilen bağlantı kendi edge'inde kesilmeli: uzak=%s yerel=%s", remoteSRS.got(), f.ts.got())
+	}
+}
+
+// Uzun süredir ulaşılamayan bir edge'in .ts oturumları silinir: aksi halde kapanmış bir sunucunun
+// izleyicileri yayıncının bağlantı kotasını süresiz doldururdu.
+func TestSessionsOnALongUnreachableEdgeStopCounting(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	remote, remoteSRS := f.addEdge("e1")
+	ok(t, f.m.OpenTS(ctx, remote, f.viewer, f.channel, "uzak-c", "1.1.1.1"))
+	other := must(f.s.CreateViewer(ctx, f.tenant, "veli", "pw", 1))
+	ok(t, f.m.OpenTS(ctx, f.local, other, f.channel, "yerel-c", "1.1.1.1"))
+	ok(t, f.m.TouchHLS(ctx, remote, must(f.s.CreateViewer(ctx, f.tenant, "ayse", "pw", 1)), f.channel, "a1", "1.1.1.1"))
+	f.ts.clients = []string{"yerel-c"}
+	remoteSRS.listErr = errors.New("bağlantı reddedildi")
+
+	// Kısa bir kesintide oturumlara dokunulmaz.
+	testdb.Exec(t, `UPDATE edges SET last_seen_at = now() - interval '30 seconds' WHERE id = $1`, remote)
+	_ = f.m.EnforceOnce(ctx)
+	if n := testdb.Count(t, `SELECT count(*) FROM sessions WHERE session_key = 'uzak-c'`); n != 1 {
+		t.Fatal("kısa süredir ulaşılamayan edge'in oturumu silinmemeliydi")
+	}
+
+	testdb.Exec(t, `UPDATE edges SET last_seen_at = now() - interval '3 minutes' WHERE id = $1`, remote)
+	_ = f.m.EnforceOnce(ctx)
+	if n := testdb.Count(t, `SELECT count(*) FROM sessions WHERE session_key = 'uzak-c'`); n != 0 {
+		t.Fatal("uzun süredir ulaşılamayan edge'in .ts oturumu silinmeliydi")
+	}
+	// Başka edge'in oturumu ve HLS kayıtları (sonlandırılmış adresleri kapalı tutar) kalır.
+	if n := testdb.Count(t, `SELECT count(*) FROM sessions`); n != 2 {
+		t.Fatalf("yerel .ts oturumu ve HLS kaydı kalmalıydı: %d", n)
 	}
 }

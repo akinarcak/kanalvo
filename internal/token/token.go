@@ -88,6 +88,12 @@ func (s *Signer) Verify(tok string, now time.Time) (Claims, error) {
 	return c, nil
 }
 
+// VerifyIgnoringExpiry, imzayı ve biçimi doğrular ama süresine bakmaz. Yalnızca imzanın bir
+// zamanlar bizim tarafımızdan üretildiğini kanıtlamak yeterliyse kullanılır.
+func (s *Signer) VerifyIgnoringExpiry(tok string) (Claims, error) {
+	return s.Verify(tok, time.Time{})
+}
+
 func (s *Signer) mac(payload string) string {
 	h := hmac.New(sha256.New, s.key)
 	h.Write([]byte(payload))

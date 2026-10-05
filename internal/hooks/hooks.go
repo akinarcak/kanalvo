@@ -110,11 +110,18 @@ func serve(w http.ResponseWriter, r *http.Request, handle func(context.Context, 
 }
 
 // onPlayOrigin: origin'e RTMP ile bağlanıp izlemek bir izleyici yolu değildir (oturum sayılmaz,
-// limit uygulanmaz). Yalnızca kayıtlı ve etkin bir edge'in çekme adresinden gelen istek kabul
-// edilir. İmzaya bakılmaz: edge, çekmeyi tetikleyen ilk izleyicinin imzasını gönderir ve yeniden
-// bağlanırken bu imzanın süresi dolmuş olabilir.
+// limit uygulanmaz). Yalnızca kayıtlı ve etkin bir edge'in çekme adresinden gelen ve o kanal için
+// bizim ürettiğimiz bir .ts imzası taşıyan istek kabul edilir. Edge, çekmeyi tetikleyen ilk
+// izleyicinin imzasını gönderir (bkz. docs/srs-findings.md); yeniden bağlanırken bu imzanın süresi
+// dolmuş olabileceği için süreye bakılmaz. İmza koşulu, edge ile aynı adresten görünen birinin
+// (aynı NAT, aynı makine) kanal numarasını bilerek izlemesini engeller.
 func (h *Handler) onPlayOrigin(ctx context.Context, ev Event) int {
-	if _, ok := channelID(ev); !ok {
+	id, ok := channelID(ev)
+	if !ok {
+		return http.StatusForbidden
+	}
+	claims, err := h.signer.VerifyIgnoringExpiry(param(ev.Param, "token"))
+	if err != nil || claims.Kind != token.KindTS || claims.ChannelID != id {
 		return http.StatusForbidden
 	}
 	allowed, err := h.edges.PullAllowed(ctx, ev.IP)

@@ -124,6 +124,18 @@ func (s *Store) MarkEdgeSeen(ctx context.Context, id int64) error {
 	return err
 }
 
+// DeleteTSSessionsOfUnreachableEdges, after süresinden uzun zamandır sağlık sinyali vermeyen
+// edge'lerin .ts oturumlarını siler. Ulaşılamayan edge'in oturumları eşitlenemez; kapanmış bir
+// sunucunun izleyicileri yayıncının bağlantı kotasını süresiz doldurmamalıdır. HLS kayıtlarına
+// dokunulmaz: onlar zaten boşta kalınca sayılmaz ve sonlandırılmış adresleri kapalı tutar.
+func (s *Store) DeleteTSSessionsOfUnreachableEdges(ctx context.Context, after time.Duration) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM sessions x USING edges e
+		WHERE x.kind = 'ts' AND e.id = x.edge_id
+		  AND coalesce(e.last_seen_at, e.created_at) < now() - make_interval(secs => $1)`, after.Seconds())
+	return tag.RowsAffected(), err
+}
+
 // EdgeSessionCounts, edge başına bağlantı limitinde sayılan oturum sayısını döner.
 func (s *Store) EdgeSessionCounts(ctx context.Context, idle time.Duration) (map[int64]int, error) {
 	rows, err := s.pool.Query(ctx, `SELECT edge_id, count(*) FROM sessions WHERE `+activeSession+` GROUP BY edge_id`, idle.Seconds())
