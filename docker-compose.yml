@@ -16,6 +16,27 @@ services:
       timeout: 3s
       retries: 30
 
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgres://streamhub:streamhub@postgres:5432/streamhub?sslmode=disable
+      SRS_API_URL: http://srs:1985
+      SRS_HLS_URL: http://srs:8080
+      TOKEN_KEY: ${TOKEN_KEY}
+      HOOK_SECRET: ${HOOK_SECRET}
+      EDGE_TS_BASE_URL: ${EDGE_TS_BASE_URL}
+      EDGE_HLS_BASE_URL: ${EDGE_HLS_BASE_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8000/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
   srs:
     image: ossrs/srs:5
     environment:

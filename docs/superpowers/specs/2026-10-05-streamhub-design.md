@@ -44,21 +44,22 @@ Değerlendirilen seçenekler:
 | MediaMTX + kendi kontrol katmanı | Reddedildi. Kesintisiz `.ts` çıkışı hazır değil; ek FFmpeg hattı gerekir. |
 | Her şey tek uygulamada | Reddedildi. Medya sunucusu yazmak asıl hedefi geciktirir. |
 
-Uygulama öncesinde doğrulanacak varsayımlar (geliştirme sırasının 1. adımı
-bunları sınar):
+Bu yaklaşımın dayandığı üç varsayım SRS 5.0.225'e karşı ölçüldü
+(ayrıntı: `docs/srs-findings.md`) ve tasarım sonuca göre düzeltildi:
 
-- SRS, HTTP üzerinden kesintisiz MPEG-TS çıkışı verir.
-- SRS, HLS izlemeleri için de izleme başladı/bitti bildirimi gönderir.
-- SRS, yayın anahtarındaki sorgu parametrelerini yetki sorgusuna aktarır.
-
-Biri doğrulanamazsa tasarım o noktada durur ve gözden geçirilir.
+| Varsayım | Sonuç | Tasarıma etkisi |
+|---|---|---|
+| SRS, yayın anahtarındaki parametreleri yetki sorgusuna aktarır | Tuttu | Yok |
+| SRS, kesintisiz MPEG-TS çıkışı verir | Yalnızca HLS kapalıyken; ikisi aynı SRS'te açılamıyor | `.ts` için ikinci bir SRS (`srs-ts`) çalışır; origin her yayını ona iletir |
+| SRS, HLS izlemelerini yetkilendirir | Çalma listesi için evet, parçalar için hayır: parçalar denetimsiz ve adları tahmin edilebilir | HLS, SRS'ten doğrudan sunulmaz; API içindeki geçit her isteği doğrular |
 
 ## 3. Mimari
 
 | Bileşen | Görevi | Kaynak |
 |---|---|---|
-| SRS (origin) | OBS'ten RTMP/SRT yayını alır, HLS ve `.ts` üretir | Hazır |
-| Kontrol API'si | Xtream uçları, panel API'si, SRS yetki sorguları, imzalı adres üretimi | Go ile yazılır |
+| SRS (origin) | OBS'ten RTMP/SRT yayını alır, HLS üretir, yayını `srs-ts`'e iletir. HTTP portu dışarıya açılmaz | Hazır |
+| SRS (`srs-ts`) | Origin'in ilettiği yayını kesintisiz `.ts` olarak dağıtır | Hazır |
+| Kontrol API'si | Xtream uçları, HLS geçidi, panel API'si, SRS yetki sorguları, imzalı adres üretimi | Go ile yazılır |
 | Panel | Yönetici ve yayıncı ekranları | React ile yazılır, API programına gömülür |
 | PostgreSQL | Kalıcı kayıtlar ve aktif oturumlar | Hazır |
 | Edge | Yayını izleyiciye dağıtır (SRS edge + nginx) | Hazır |
@@ -80,7 +81,9 @@ Biri doğrulanamazsa tasarım o noktada durur ve gözden geçirilir.
 | `balancer` | Sağlıklı edge'ler arasından ağırlığa göre seçim | `store` |
 | `session` | Oturum açma/kapama, limit hesabı, eskiyen oturum temizliği | `store` |
 | `xtream` | Xtream uçları ve yanıt biçimleri | `store`, `token`, `balancer` |
-| `hooks` | SRS'in yayın ve izleme sorguları | `store`, `token`, `session` |
+| `hooks` | SRS'in yayın ve `.ts` izleme sorguları | `store`, `token`, `session` |
+| `hlsgw` | HLS geçidi: `/hls/<imza>/<dosya>` isteklerini doğrular ve SRS'e aktarır | `store`, `token`, `session` |
+| `reconcile` | Kanalların "yayında" durumunu SRS'teki gerçek yayınlarla eşitler | `store` |
 | `panelapi` | Yönetici ve yayıncı REST uçları | `store`, `auth` |
 
 ## 4. Veri modeli
@@ -127,10 +130,21 @@ giden hiçbir adreste yer almaz.
 2. API izleyiciyi, durumunu, bitiş tarihini ve kanalın izleyicinin
    yayıncısına ait olduğunu doğrular.
 3. API sağlıklı edge'lerden birini ağırlığa göre seçer.
-4. API, birkaç dakika geçerli imzalı adresle o edge'e yönlendirir (302).
-5. Edge'deki SRS izleme başlarken API'ye sorar. API imzayı ve bağlantı
-   limitini doğrular, oturumu açar.
-6. İzleme bitince SRS haber verir, oturum kapanır.
+4. API imzalı adresle o edge'e yönlendirir (302). İki biçim farklı işler:
+   - **`.ts`:** `<edge>/live/<kanal no>.ts?token=<imza>`. İmza birkaç dakika
+     geçerlidir ve yalnızca izleme başlarken doğrulanır: `srs-ts` izleme
+     başlarken API'ye sorar, API imzayı ve bağlantı limitini doğrular,
+     oturumu açar; izleme bitince SRS haber verir ve oturum kapanır.
+   - **`.m3u8`:** `<edge>/hls/<imza>/<kanal no>.m3u8`. İmza yolun içindedir;
+     böylece çalma listesindeki göreli parça adresleri onu devralır. Geçit
+     her çalma listesi ve parça isteğinde imzayı, izleyicinin durumunu ve
+     kanalın yayında olduğunu doğrular, sonra dosyayı SRS'ten aktarır. Her
+     istekte doğrulandığı için bu imzanın ömrü uzundur (varsayılan 6 saat);
+     askıya alma ve yayının bitmesi birkaç saniye içinde etkili olur.
+
+SRS çöker veya yeniden başlarsa "yayın bitti" bildirimi gelmez. API bu
+yüzden SRS'in yayın listesini düzenli olarak sorar ve listede olmayan
+kanalları çevrimdışı yapar; SRS'e ulaşılamazsa hiçbir kanala dokunmaz.
 
 ### Xtream uçları
 
@@ -157,9 +171,14 @@ giden hiçbir adreste yer almaz.
 - Her panel isteğinde yayıncı kimliği sunucu tarafında oturumdan alınır;
   istekle gelen yayıncı kimliğine güvenilmez.
 - İmzalı adres izleyici, kanal ve son geçerlilik zamanını içerir, HMAC-SHA256
-  ile imzalanır. Başlamış izleme süre dolunca kesilmez.
+  ile imzalanır. Başlamış `.ts` izlemesi süre dolunca kesilmez; HLS izlemesi
+  imza süresi (varsayılan 6 saat) dolunca oynatıcının adresi yeniden
+  istemesini gerektirir.
 - İmzalı adres geçerlilik süresi içinde paylaşılabilir; bağlantı limiti bunu
-  sınırlar. IP'ye bağlama seçeneği vardır, varsayılan olarak kapalıdır.
+  sınırlar. HLS adresinin ömrü uzun olduğu için bu sınır HLS'te daha önemlidir
+  ve bağlantı limiti gelene kadar (Plan 3) açıktır. IP'ye bağlama seçeneği
+  sonraya bırakılmıştır.
+- Origin SRS'in HTTP portu dışarıya açılmaz; HLS yalnızca geçitten verilir.
 - Xtream uçlarında IP başına hatalı giriş sınırı uygulanır.
 - SRS'in API'ye yaptığı sorgular yalnızca iç ağdan ve paylaşılan sır ile
   kabul edilir.

@@ -68,3 +68,18 @@ HLS çalma listesi (`hls_ctx` kapalıyken beklenen biçim; parça adları görel
   origin'den çekerken izleyicinin imzasını origin'e taşıyıp taşımadığı ve
   origin'in `play` sorgusunu nasıl etkilediği ölçülmeli. HLS için edge'de aynı
   geçit (origin'e önbellekli aktarım) çalışabilir.
+
+## Uçtan uca doğrulama (2026-10-05)
+
+Tüm servisler çalışırken, gerçek bir çözücüyle (FFmpeg 6.1 `ffprobe` ve `ffmpeg -f null`)
+dış adresler üzerinden:
+
+| Senaryo | Sonuç |
+|---|---|
+| `/live/<kullanıcı>/<şifre>/<kanal>.ts` | H.264 640x360 + AAC algılandı, 4 saniye hatasız çözüldü |
+| `/live/<kullanıcı>/<şifre>/<kanal>.m3u8` | H.264 640x360 + AAC algılandı, 4 saniye hatasız çözüldü |
+| Aynı kanala ikinci yayın | Reddedildi; ilk yayın sürdü |
+| Yanlış gizli anahtarla yayın | Reddedildi |
+| SRS öldürülüp yeniden başlatıldı | Kanal yaklaşık 30 saniye içinde çevrimdışı oldu, yeni yayın kabul edildi |
+
+OBS ve masaüstü oynatıcıyla (VLC, TiviMate) elle doğrulama henüz yapılmadı.
