@@ -2,12 +2,22 @@ package store
 
 import "time"
 
+type Category struct {
+	ID       int64
+	TenantID int64
+	Name     string
+	Position int
+}
+
 type Channel struct {
 	ID           int64
 	TenantID     int64
 	Name         string
 	StreamSecret string
 	Live         bool
+	CategoryID   *int64
+	LogoURL      string
+	CreatedAt    time.Time
 	TenantStatus string
 }
 
@@ -19,6 +29,7 @@ type Viewer struct {
 	Status         string
 	ExpiresAt      *time.Time
 	MaxConnections int
+	CreatedAt      time.Time
 	TenantStatus   string
 }
 

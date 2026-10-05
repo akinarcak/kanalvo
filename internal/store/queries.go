@@ -27,14 +27,58 @@ func (s *Store) CreateChannel(ctx context.Context, tenantID int64, name, secret 
 	return id, err
 }
 
-func (s *Store) ChannelByID(ctx context.Context, id int64) (Channel, error) {
+const channelSelect = `
+	SELECT c.id, c.tenant_id, c.name, c.stream_secret, c.live, c.category_id, c.logo_url, c.created_at, t.status
+	FROM channels c JOIN tenants t ON t.id = c.tenant_id `
+
+func scanChannel(row pgx.Row) (Channel, error) {
 	var c Channel
-	err := s.pool.QueryRow(ctx, `
-		SELECT c.id, c.tenant_id, c.name, c.stream_secret, c.live, t.status
-		FROM channels c JOIN tenants t ON t.id = c.tenant_id
-		WHERE c.id = $1`, id).
-		Scan(&c.ID, &c.TenantID, &c.Name, &c.StreamSecret, &c.Live, &c.TenantStatus)
+	err := row.Scan(&c.ID, &c.TenantID, &c.Name, &c.StreamSecret, &c.Live, &c.CategoryID, &c.LogoURL, &c.CreatedAt, &c.TenantStatus)
 	return c, notFound(err)
+}
+
+func (s *Store) ChannelByID(ctx context.Context, id int64) (Channel, error) {
+	return scanChannel(s.pool.QueryRow(ctx, channelSelect+`WHERE c.id = $1`, id))
+}
+
+// ChannelsByTenant, yayıncının kanallarını numara sırasıyla döner.
+func (s *Store) ChannelsByTenant(ctx context.Context, tenantID int64) ([]Channel, error) {
+	rows, err := s.pool.Query(ctx, channelSelect+`WHERE c.tenant_id = $1 ORDER BY c.id`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (Channel, error) { return scanChannel(row) })
+}
+
+func (s *Store) CreateCategory(ctx context.Context, tenantID int64, name string) (int64, error) {
+	var id int64
+	err := s.pool.QueryRow(ctx, `INSERT INTO categories (tenant_id, name) VALUES ($1, $2) RETURNING id`, tenantID, name).Scan(&id)
+	return id, err
+}
+
+// CategoriesByTenant, yayıncının kategorilerini sıra numarasına göre döner.
+func (s *Store) CategoriesByTenant(ctx context.Context, tenantID int64) ([]Category, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, tenant_id, name, position FROM categories WHERE tenant_id = $1 ORDER BY position, id`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[Category])
+}
+
+// SetChannelCategory, kanalın kategorisini değiştirir; nil kategoriyi kaldırır.
+// Kategori kanalla aynı yayıncıya ait değilse ErrNotFound döner.
+func (s *Store) SetChannelCategory(ctx context.Context, channelID int64, categoryID *int64) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE channels c SET category_id = $2
+		WHERE c.id = $1
+		  AND ($2::bigint IS NULL OR EXISTS (
+		        SELECT 1 FROM categories k WHERE k.id = $2 AND k.tenant_id = c.tenant_id))`,
+		channelID, categoryID)
+	if err == nil && tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return err
 }
 
 func (s *Store) CreateViewer(ctx context.Context, tenantID int64, username, password string, maxConnections int) (int64, error) {
@@ -46,7 +90,7 @@ func (s *Store) CreateViewer(ctx context.Context, tenantID int64, username, pass
 }
 
 const viewerSelect = `
-	SELECT v.id, v.tenant_id, v.username, v.password, v.status, v.expires_at, v.max_connections, t.status
+	SELECT v.id, v.tenant_id, v.username, v.password, v.status, v.expires_at, v.max_connections, v.created_at, t.status
 	FROM viewers v JOIN tenants t ON t.id = v.tenant_id `
 
 func (s *Store) ViewerByUsername(ctx context.Context, username string) (Viewer, error) {
@@ -59,7 +103,7 @@ func (s *Store) ViewerByID(ctx context.Context, id int64) (Viewer, error) {
 
 func scanViewer(row pgx.Row) (Viewer, error) {
 	var v Viewer
-	err := row.Scan(&v.ID, &v.TenantID, &v.Username, &v.Password, &v.Status, &v.ExpiresAt, &v.MaxConnections, &v.TenantStatus)
+	err := row.Scan(&v.ID, &v.TenantID, &v.Username, &v.Password, &v.Status, &v.ExpiresAt, &v.MaxConnections, &v.CreatedAt, &v.TenantStatus)
 	return v, notFound(err)
 }
 

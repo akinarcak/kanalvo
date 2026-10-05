@@ -35,7 +35,7 @@ func New(t *testing.T) *store.Store {
 		t.Fatal(err)
 	}
 	defer conn.Close(ctx)
-	if _, err := conn.Exec(ctx, `TRUNCATE viewers, channels, tenants RESTART IDENTITY CASCADE`); err != nil {
+	if _, err := conn.Exec(ctx, `TRUNCATE viewers, channels, categories, tenants RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("tablolar boşaltılamadı: %v", err)
 	}
 	return s
