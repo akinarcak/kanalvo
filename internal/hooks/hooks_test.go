@@ -1,0 +1,257 @@
+package hooks_test
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"streamhub/internal/hooks"
+	"streamhub/internal/store"
+	"streamhub/internal/testdb"
+	"streamhub/internal/token"
+)
+
+const hookSecret = "hook-secret-0123456789"
+
+var now = time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+
+type fixture struct {
+	t       *testing.T
+	store   *store.Store
+	signer  *token.Signer
+	mux     *http.ServeMux
+	tenant  int64
+	channel int64
+	viewer  int64
+}
+
+func must[T any](v T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+func setup(t *testing.T) *fixture {
+	ctx := context.Background()
+	f := &fixture{t: t, store: testdb.New(t), signer: token.NewSigner([]byte(strings.Repeat("k", 32))), mux: http.NewServeMux()}
+	f.tenant = must(f.store.CreateTenant(ctx, "t"))
+	f.channel = must(f.store.CreateChannel(ctx, f.tenant, "c", "sek"))
+	f.viewer = must(f.store.CreateViewer(ctx, f.tenant, "ali", "pw", 1))
+	hooks.New(f.store, f.signer, func() time.Time { return now }).Register(f.mux, hookSecret)
+	return f
+}
+
+func (f *fixture) post(secret, event, body string) int {
+	f.t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/hooks/srs/"+secret+"/"+event, strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	f.mux.ServeHTTP(rec, req)
+	if rec.Code == http.StatusOK && strings.TrimSpace(rec.Body.String()) != `{"code":0}` {
+		f.t.Fatalf("kabul gövdesi beklenmedik: %q", rec.Body.String())
+	}
+	return rec.Code
+}
+
+// event, SRS 5.0.225'in gönderdiği gövdenin biçimidir (bkz. docs/srs-findings.md).
+func event(client, app, stream, param string) string {
+	return fmt.Sprintf(`{"server_id":"vid-1","action":"x","client_id":%q,"ip":"1.2.3.4","vhost":"__defaultVhost__","app":%q,"tcUrl":"rtmp://srs:1935/live","stream":%q,"param":%q,"stream_url":"/live/1","stream_id":"vid-2"}`,
+		client, app, stream, param)
+}
+
+func (f *fixture) publish(client, param string) int {
+	return f.post(hookSecret, "publish", event(client, "live", fmt.Sprint(f.channel), param))
+}
+
+func (f *fixture) live() bool {
+	return must(f.store.ChannelByID(context.Background(), f.channel)).Live
+}
+
+func (f *fixture) tokenFor(viewer, channel int64, exp time.Time) string {
+	return "?token=" + f.signer.Sign(token.Claims{ViewerID: viewer, ChannelID: channel, ExpiresAt: exp})
+}
+
+func (f *fixture) play(stream, param string) int {
+	return f.post(hookSecret, "play", event("p1", "live", stream, param))
+}
+
+func TestPublishAcceptsValidSecret(t *testing.T) {
+	f := setup(t)
+	if code := f.publish("a", "?secret=sek"); code != http.StatusOK {
+		t.Fatalf("durum %d", code)
+	}
+	if !f.live() {
+		t.Fatal("kanal yayında olmalı")
+	}
+}
+
+func TestPublishAcceptsParamWithoutQuestionMarkAndExtraParams(t *testing.T) {
+	f := setup(t)
+	if code := f.publish("a", "secret=sek&foo=bar"); code != http.StatusOK {
+		t.Fatalf("durum %d", code)
+	}
+}
+
+func TestPublishRejectsWrongSecret(t *testing.T) {
+	f := setup(t)
+	for _, param := range []string{"?secret=yanlis", "?secret=", "", "?other=sek"} {
+		if code := f.publish("a", param); code != http.StatusForbidden {
+			t.Errorf("param %q: durum %d", param, code)
+		}
+	}
+	if f.live() {
+		t.Fatal("kanal çevrimdışı kalmalı")
+	}
+}
+
+func TestPublishRejectsMalformedInput(t *testing.T) {
+	f := setup(t)
+	ch := fmt.Sprint(f.channel)
+	cases := map[string]struct {
+		body string
+		want int
+	}{
+		"sayısal olmayan kanal": {event("a", "live", "abc", "?secret=sek"), http.StatusForbidden},
+		"uzantılı kanal adı":    {event("a", "live", ch+".ts", "?secret=sek"), http.StatusForbidden},
+		"sıfır kanal":           {event("a", "live", "0", "?secret=sek"), http.StatusForbidden},
+		"negatif kanal":         {event("a", "live", "-1", "?secret=sek"), http.StatusForbidden},
+		"olmayan kanal":         {event("a", "live", "999999", "?secret=sek"), http.StatusForbidden},
+		"yanlış uygulama":       {event("a", "other", ch, "?secret=sek"), http.StatusForbidden},
+		"bozuk parametre":       {event("a", "live", ch, "?secret=%zz"), http.StatusForbidden},
+		"bozuk JSON":            {`{"app":`, http.StatusBadRequest},
+		"boş gövde":             {``, http.StatusBadRequest},
+	}
+	for name, c := range cases {
+		if code := f.post(hookSecret, "publish", c.body); code != c.want {
+			t.Errorf("%s: durum %d, beklenen %d", name, code, c.want)
+		}
+	}
+	if f.live() {
+		t.Fatal("kanal çevrimdışı kalmalı")
+	}
+}
+
+func TestRejectsWrongHookSecretAndUnknownEvent(t *testing.T) {
+	f := setup(t)
+	body := event("a", "live", fmt.Sprint(f.channel), "?secret=sek")
+	if code := f.post("yanlis-sir", "publish", body); code != http.StatusNotFound {
+		t.Fatalf("yanlış sır: durum %d", code)
+	}
+	if code := f.post(hookSecret, "bilinmeyen", body); code != http.StatusNotFound {
+		t.Fatalf("bilinmeyen olay: durum %d", code)
+	}
+	if f.live() {
+		t.Fatal("kanal çevrimdışı kalmalı")
+	}
+}
+
+func TestPublishRejectsSuspendedTenant(t *testing.T) {
+	f := setup(t)
+	if err := f.store.SetTenantStatus(context.Background(), f.tenant, "suspended"); err != nil {
+		t.Fatal(err)
+	}
+	if code := f.publish("a", "?secret=sek"); code != http.StatusForbidden {
+		t.Fatalf("durum %d", code)
+	}
+}
+
+func TestSecondPublisherRejectedAndCannotTakeChannelOffline(t *testing.T) {
+	f := setup(t)
+	ch := fmt.Sprint(f.channel)
+	if code := f.publish("a", "?secret=sek"); code != http.StatusOK {
+		t.Fatalf("ilk yayıncı: durum %d", code)
+	}
+	if code := f.publish("b", "?secret=sek"); code != http.StatusForbidden {
+		t.Fatalf("ikinci yayıncı: durum %d", code)
+	}
+	if code := f.post(hookSecret, "unpublish", event("b", "live", ch, "")); code != http.StatusOK {
+		t.Fatalf("unpublish her zaman kabul edilmeli: durum %d", code)
+	}
+	if !f.live() {
+		t.Fatal("reddedilen bağlantının bildirimi süren yayını çevrimdışı yapmamalı")
+	}
+	f.post(hookSecret, "unpublish", event("a", "live", ch, ""))
+	if f.live() {
+		t.Fatal("yayıncının kendi bildirimi kanalı çevrimdışı yapmalı")
+	}
+}
+
+func TestUnpublishWithMalformedStreamIsAccepted(t *testing.T) {
+	f := setup(t)
+	if code := f.post(hookSecret, "unpublish", event("a", "live", "abc", "")); code != http.StatusOK {
+		t.Fatalf("durum %d", code)
+	}
+}
+
+func TestPlayAcceptsValidToken(t *testing.T) {
+	f := setup(t)
+	f.publish("a", "?secret=sek")
+	param := f.tokenFor(f.viewer, f.channel, now.Add(time.Minute)) + "&foo=bar"
+	if code := f.play(fmt.Sprint(f.channel), param); code != http.StatusOK {
+		t.Fatalf("durum %d", code)
+	}
+}
+
+func TestPlayRejectsTokenForOtherChannel(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	other := must(f.store.CreateChannel(ctx, f.tenant, "c2", "sek2"))
+	must(f.store.MarkLive(ctx, other, "z"))
+	f.publish("a", "?secret=sek")
+	param := f.tokenFor(f.viewer, f.channel, now.Add(time.Minute))
+	if code := f.play(fmt.Sprint(other), param); code != http.StatusForbidden {
+		t.Fatalf("durum %d", code)
+	}
+}
+
+func TestPlayRejections(t *testing.T) {
+	ctx := context.Background()
+	cases := map[string]func(f *fixture) string{
+		"imza yok":         func(f *fixture) string { return "" },
+		"bozuk imza":       func(f *fixture) string { return "?token=1.1.1.AAAA" },
+		"süresi dolmuş":    func(f *fixture) string { return f.tokenFor(f.viewer, f.channel, now) },
+		"olmayan izleyici": func(f *fixture) string { return f.tokenFor(f.viewer+999, f.channel, now.Add(time.Minute)) },
+		"askıda izleyici": func(f *fixture) string {
+			f.store.SetViewerStatus(ctx, f.viewer, "suspended")
+			return f.tokenFor(f.viewer, f.channel, now.Add(time.Minute))
+		},
+		"süresi dolmuş izleyici": func(f *fixture) string {
+			past := now.Add(-time.Hour)
+			f.store.SetViewerExpiry(ctx, f.viewer, &past)
+			return f.tokenFor(f.viewer, f.channel, now.Add(time.Minute))
+		},
+		"başka yayıncının izleyicisi": func(f *fixture) string {
+			t2 := must(f.store.CreateTenant(ctx, "t2"))
+			v2 := must(f.store.CreateViewer(ctx, t2, "veli", "pw", 1))
+			return f.tokenFor(v2, f.channel, now.Add(time.Minute))
+		},
+	}
+	for name, makeParam := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := setup(t)
+			f.publish("a", "?secret=sek")
+			if code := f.play(fmt.Sprint(f.channel), makeParam(f)); code != http.StatusForbidden {
+				t.Fatalf("durum %d", code)
+			}
+		})
+	}
+}
+
+func TestPlayRejectsOfflineChannel(t *testing.T) {
+	f := setup(t)
+	param := f.tokenFor(f.viewer, f.channel, now.Add(time.Minute))
+	if code := f.play(fmt.Sprint(f.channel), param); code != http.StatusForbidden {
+		t.Fatalf("durum %d", code)
+	}
+}
+
+func TestStopIsAccepted(t *testing.T) {
+	f := setup(t)
+	if code := f.post(hookSecret, "stop", event("p1", "live", fmt.Sprint(f.channel), "")); code != http.StatusOK {
+		t.Fatalf("durum %d", code)
+	}
+}
