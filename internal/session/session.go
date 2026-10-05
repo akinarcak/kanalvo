@@ -84,6 +84,49 @@ func (m *Manager) kickEvicted(ctx context.Context, evicted []store.Evicted) {
 	}
 }
 
+// KickPublisher, bir kanalın süren yayınını keser (ör. yayın anahtarı yenilendiğinde).
+// Kesme başarısız olursa yalnızca loglanır; çağıranın işlemi bundan etkilenmez.
+func (m *Manager) KickPublisher(ctx context.Context, channelID int64) {
+	publisher, _, err := m.store.ChannelConnections(ctx, channelID)
+	if err != nil || publisher == "" {
+		return
+	}
+	m.kickNow(ctx, m.origin, publisher)
+}
+
+// EndChannel, bir kanalın süren yayınını ve .ts izlemelerini keser (ör. kanal silinirken).
+func (m *Manager) EndChannel(ctx context.Context, channelID int64) {
+	publisher, viewers, err := m.store.ChannelConnections(ctx, channelID)
+	if err != nil {
+		return
+	}
+	if publisher != "" {
+		m.kickNow(ctx, m.origin, publisher)
+	}
+	for _, id := range viewers {
+		m.kickNow(ctx, m.ts, id)
+	}
+}
+
+// EndViewer, bir izleyicinin süren .ts izlemelerini keser (ör. izleyici silinirken).
+func (m *Manager) EndViewer(ctx context.Context, viewerID int64) {
+	ids, err := m.store.ViewerTSConnections(ctx, viewerID)
+	if err != nil {
+		return
+	}
+	for _, id := range ids {
+		m.kickNow(ctx, m.ts, id)
+	}
+}
+
+func (m *Manager) kickNow(ctx context.Context, srs SRS, id string) {
+	kickCtx, cancel := context.WithTimeout(ctx, kickTimeout)
+	defer cancel()
+	if err := srs.Kick(kickCtx, id); err != nil {
+		log.Printf("session: bağlantı kesilemedi: %v", err)
+	}
+}
+
 // Run, EnforceOnce'ı bağlam iptal edilene kadar düzenli olarak çalıştırır.
 func (m *Manager) Run(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
