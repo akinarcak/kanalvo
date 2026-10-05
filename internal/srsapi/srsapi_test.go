@@ -35,11 +35,22 @@ func TestClientIDs(t *testing.T) {
 	}
 }
 
+func TestClientIDsEmptyList(t *testing.T) {
+	c := server(t, func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, `{"code":0,"clients":[]}`) })
+	ids, err := c.ClientIDs(context.Background())
+	if err != nil || len(ids) != 0 {
+		t.Fatalf("boş liste geçerlidir: %v, %v", ids, err)
+	}
+}
+
 func TestClientIDsErrors(t *testing.T) {
 	cases := map[string]http.HandlerFunc{
 		"HTTP hatası":   func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(500) },
 		"SRS hata kodu": func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, `{"code":100}`) },
 		"bozuk JSON":    func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, `{"code":0,"clients":`) },
+		// Liste alanı yoksa "kimse bağlı değil" sanılmamalı; aksi halde tüm oturumlar silinirdi.
+		"clients alanı yok": func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, `{"code":0,"server":"vid-1"}`) },
+		"clients null":      func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, `{"code":0,"clients":null}`) },
 	}
 	for name, h := range cases {
 		if _, err := server(t, h).ClientIDs(context.Background()); err == nil {

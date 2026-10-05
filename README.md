@@ -42,7 +42,8 @@ Telefondaki veya televizyondaki bir oynatıcıdan denemek için `.env` içindeki
 - Her izleyicinin bir bağlantı limiti vardır (`seed-dev` ile oluşturulan izleyicide 1). Limit doluyken
   yeni bir izleme başlarsa en eski izleme kesilir; böylece kanal değiştiren izleyici beklemez,
   hesabını paylaşanlar ise birbirini düşürür.
-- Paylaşılan bir HLS adresi başka bir ağdan açılırsa ayrı bir bağlantı sayılır.
+- Bir HLS adresi aynı anda tek bir ağdan kullanılabilir. Başka ağdan açılırsa oturum oraya taşınır
+  (ağ değiştiren izleyici devam eder) ve 1 dakika dolmadan geri taşınamaz.
 - Yayıncının toplam bağlantı kotası doluysa yeni izleyici reddedilir (kimse düşürülmez).
 - Bir yayıncıyı askıya almak için:
 
@@ -52,6 +53,8 @@ Telefondaki veya televizyondaki bir oynatıcıdan denemek için `.env` içindeki
 
   Süren yayınları ve izleyicilerinin bağlantıları birkaç saniye içinde kesilir. Geri almak için
   `active` yazın.
+- Yeni yayıncıların varsayılan kotaları: 10 kanal, 100 izleyici, 100 eşzamanlı bağlantı. Bu sürüme
+  güncellenen mevcut yayıncılar da aynı değerleri alır.
 
 ## Ayarlar
 

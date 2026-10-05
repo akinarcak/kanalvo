@@ -152,6 +152,33 @@ func TestEnforceKicksRevokedAndUnentitledConnections(t *testing.T) {
 	}
 }
 
+// .ts dağıtıcısı yanıt vermese de askıdaki yayıncının yayını origin'de kesilmeli.
+func TestEnforceStepsAreIndependent(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	other := must(f.s.CreateTenant(ctx, "askidaki"))
+	theirChannel := must(f.s.CreateChannel(ctx, other, "c", "s"))
+	must(f.s.MarkLive(ctx, theirChannel, "yayinci-1"))
+	for i, name := range []string{"a", "b", "c"} {
+		v := must(f.s.CreateViewer(ctx, other, name, "pw", 1))
+		ok(t, f.m.OpenTS(ctx, v, theirChannel, fmt.Sprintf("izleyici-%d", i), "1.1.1.1"))
+	}
+	ok(t, f.s.SetTenantStatus(ctx, other, "suspended"))
+
+	f.ts.kickErr = errors.New("SRS yanıt vermiyor")
+	f.ts.listErr = errors.New("SRS yanıt vermiyor")
+	if err := f.m.EnforceOnce(ctx); err == nil {
+		t.Fatal("hata bildirilmeliydi")
+	}
+	if f.origin.got() != "[yayinci-1]" {
+		t.Fatalf("origin adımı .ts dağıtıcısındaki hatadan etkilenmemeli: %s", f.origin.got())
+	}
+	// Yanıt vermeyen bir SRS'e aynı geçişte tekrar tekrar gidilmez.
+	if f.ts.got() != "[izleyici-0]" {
+		t.Fatalf("ilk hatadan sonra o SRS için kesme denemeleri durmalı: %s", f.ts.got())
+	}
+}
+
 func TestEnforceRemovesSessionsMissingFromSRS(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()

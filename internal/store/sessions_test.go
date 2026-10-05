@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -86,16 +88,134 @@ func TestNewSessionEvictsOldestWhenLimitReached(t *testing.T) {
 	}
 }
 
-func TestSharedLinkFromAnotherAddressIsASeparateSession(t *testing.T) {
+// Bir HLS adresi aynı anda tek bir ağdan kullanılabilir. Başka ağdan açılırsa oturum oraya taşınır
+// (Wi-Fi'den mobil veriye geçen izleyici); kısa süre içinde geri taşınamaz (adresi paylaşan iki kişi).
+func TestHLSLinkMovesToANewAddressButNotBackAndForth(t *testing.T) {
 	f := newSessionFixture(t, 1)
 	must(f.hls("k1", "1.1.1.1"))
-	wantEvicted(t, must(f.hls("k1", "2.2.2.2")), store.Evicted{Kind: "hls", Key: "k1"})
-
-	if _, err := f.hls("k1", "1.1.1.1"); !errors.Is(err, store.ErrSessionRevoked) {
-		t.Fatalf("ilk adres yerinden edilmiş olmalı, gelen: %v", err)
+	wantEvicted(t, must(f.hls("k1", "2.2.2.2")))
+	if n := f.active(); n != 1 {
+		t.Fatalf("taşınan oturum tek bağlantı sayılmalı: %d", n)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := f.hls("k1", "1.1.1.1"); !errors.Is(err, store.ErrSessionMoved) {
+			t.Fatalf("eski adres hemen geri dönememeli, gelen: %v", err)
+		}
 	}
 	if _, err := f.hls("k1", "2.2.2.2"); err != nil {
-		t.Fatalf("ikinci adres sürmeli: %v", err)
+		t.Fatalf("yeni adres sürmeli: %v", err)
+	}
+
+	testdb.Exec(t, `UPDATE sessions SET ip_changed_at = now() - interval '2 minutes' WHERE session_key = 'k1'`)
+	if _, err := f.hls("k1", "1.1.1.1"); err != nil {
+		t.Fatalf("bekleme süresi dolunca oturum yeniden taşınabilmeli: %v", err)
+	}
+}
+
+// Yerinden edilen bir HLS adresi hiçbir ağdan geri dönemez.
+func TestEvictedHLSLinkIsDeadFromEveryAddress(t *testing.T) {
+	f := newSessionFixture(t, 1)
+	must(f.hls("k1", "1.1.1.1"))
+	wantEvicted(t, must(f.hls("k2", "1.1.1.1")), store.Evicted{Kind: "hls", Key: "k1"})
+	testdb.Exec(t, `UPDATE sessions SET ip_changed_at = now() - interval '2 minutes'`)
+	for _, ip := range []string{"1.1.1.1", "3.3.3.3", "2001:db8:0:1::/64"} {
+		if _, err := f.hls("k1", ip); !errors.Is(err, store.ErrSessionRevoked) {
+			t.Fatalf("%s: yerinden edilen adres geri dönememeli, gelen: %v", ip, err)
+		}
+	}
+	if _, err := f.hls("k2", "1.1.1.1"); err != nil {
+		t.Fatalf("yerinden eden oturum etkilenmemeli: %v", err)
+	}
+}
+
+// Süren bir HLS oturumu her istekte veritabanına yazmaz; son görülme zamanı seyrek güncellenir.
+func TestHLSTouchIsThrottled(t *testing.T) {
+	f := newSessionFixture(t, 1)
+	must(f.hls("k1", "1.1.1.1"))
+	stamp := func() int {
+		return testdb.Count(t, `SELECT (extract(epoch FROM last_seen_at) * 1000000)::bigint % 1000000007 FROM sessions WHERE session_key = 'k1'`)
+	}
+	first := stamp()
+	must(f.hls("k1", "1.1.1.1"))
+	if stamp() != first {
+		t.Fatal("yeni görülmüş oturum yeniden yazılmamalı")
+	}
+	testdb.Exec(t, `UPDATE sessions SET last_seen_at = now() - interval '12 seconds' WHERE session_key = 'k1'`)
+	stale := stamp()
+	must(f.hls("k1", "1.1.1.1"))
+	if stamp() == stale {
+		t.Fatal("eskiyen son görülme zamanı güncellenmeli")
+	}
+	if n := f.active(); n != 1 {
+		t.Fatalf("etkin oturum sayısı %d", n)
+	}
+}
+
+// Eşzamanlı oturum açılışları limiti aşamaz.
+func TestConcurrentOpensCannotExceedViewerLimit(t *testing.T) {
+	f := newSessionFixture(t, 1)
+	const n = 24
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var err error
+			if i%2 == 0 {
+				_, err = f.hls(fmt.Sprintf("k%d", i), "1.1.1.1")
+			} else {
+				_, err = f.ts(fmt.Sprintf("c%d", i))
+			}
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("her açılış kabul edilmeli (eskisini yerinden ederek): %v", err)
+		}
+	}
+	if got := f.active(); got != 1 {
+		t.Fatalf("limit 1 iken %d etkin oturum kaldı", got)
+	}
+	if revoked := testdb.Count(t, `SELECT count(*) FROM sessions WHERE revoked`); revoked != n-1 {
+		t.Fatalf("%d oturum yerinden edilmeliydi, edilen: %d", n-1, revoked)
+	}
+}
+
+func TestConcurrentOpensCannotExceedTenantQuota(t *testing.T) {
+	f := newSessionFixture(t, 1)
+	ctx := context.Background()
+	if err := f.s.SetTenantQuotas(ctx, f.tenant, store.Quotas{MaxChannels: 10, MaxViewers: 100, MaxConnections: 3}); err != nil {
+		t.Fatal(err)
+	}
+	const n = 12
+	viewers := make([]int64, n)
+	for i := range viewers {
+		viewers[i] = must(f.s.CreateViewer(ctx, f.tenant, fmt.Sprintf("v%d", i), "pw", 1))
+	}
+	var wg sync.WaitGroup
+	var admitted, rejected atomic.Int64
+	for i, v := range viewers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := f.s.TouchHLSSession(ctx, v, f.channel, fmt.Sprintf("k%d", i), "1.1.1.1", idle)
+			switch {
+			case err == nil:
+				admitted.Add(1)
+			case errors.Is(err, store.ErrTenantConnectionLimit):
+				rejected.Add(1)
+			default:
+				t.Errorf("beklenmeyen hata: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if admitted.Load() != 3 || rejected.Load() != n-3 {
+		t.Fatalf("kota 3 iken %d kabul, %d ret", admitted.Load(), rejected.Load())
 	}
 }
 

@@ -58,7 +58,6 @@ services:
       - "host.docker.internal:host-gateway"
     ports:
       - "1935:1935"
-      - "127.0.0.1:1985:1985"
 
   srs-ts:
     image: ossrs/srs:5

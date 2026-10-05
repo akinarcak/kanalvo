@@ -16,6 +16,15 @@ const maxClients = 100000
 
 var idPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
+// StatusError, SRS'e ulaşıldığını ama isteği reddettiğini bildirir (ör. kesilmek istenen bağlantı
+// artık yok). Ulaşılamama hatalarından ayırt edilebilmesi için ayrı bir türdür.
+type StatusError struct {
+	Op   string
+	Code int
+}
+
+func (e *StatusError) Error() string { return fmt.Sprintf("srsapi: %s: kod %d", e.Op, e.Code) }
+
 type Client struct {
 	base string
 	http *http.Client
@@ -29,7 +38,7 @@ func New(baseURL string) *Client {
 // ClientIDs, SRS'e bağlı tüm istemcilerin (izleyici ve yayıncı) kimliklerini döner.
 func (c *Client) ClientIDs(ctx context.Context) ([]string, error) {
 	var body struct {
-		Clients []struct {
+		Clients *[]struct {
 			ID string `json:"id"`
 		} `json:"clients"`
 	}
@@ -37,8 +46,12 @@ func (c *Client) ClientIDs(ctx context.Context) ([]string, error) {
 	if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/api/v1/clients/?count=%d", maxClients), &body); err != nil {
 		return nil, err
 	}
-	ids := make([]string, 0, len(body.Clients))
-	for _, cl := range body.Clients {
+	// Liste alanı yoksa "kimse bağlı değil" sanılmamalı; çağıran buna göre oturum siler.
+	if body.Clients == nil {
+		return nil, fmt.Errorf("srsapi: bağlantı listesi yanıtında clients alanı yok")
+	}
+	ids := make([]string, 0, len(*body.Clients))
+	for _, cl := range *body.Clients {
 		ids = append(ids, cl.ID)
 	}
 	return ids, nil
@@ -76,7 +89,7 @@ func (c *Client) do(ctx context.Context, method, path string, out any) error {
 		return fmt.Errorf("srsapi: %s %s: yanıt çözülemedi: %w", method, path, err)
 	}
 	if status.Code != 0 {
-		return fmt.Errorf("srsapi: %s %s: kod %d", method, path, status.Code)
+		return &StatusError{Op: method + " " + path, Code: status.Code}
 	}
 	if out == nil {
 		return nil

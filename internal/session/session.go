@@ -8,6 +8,7 @@ import (
 	"log"
 	"time"
 
+	"streamhub/internal/srsapi"
 	"streamhub/internal/store"
 )
 
@@ -17,6 +18,9 @@ const kickTimeout = 2 * time.Second
 
 // reconcileGrace, yeni açılmış bir .ts oturumunun SRS listesinde görünmesi için tanınan süredir.
 const reconcileGrace = 10 * time.Second
+
+// passTimeout, tek bir uygulama geçişinin en uzun süresidir.
+const passTimeout = 20 * time.Second
 
 // SRS, bir SRS'in yönetim API'sinin kullanılan kısmıdır (bkz. srsapi.Client).
 type SRS interface {
@@ -102,16 +106,28 @@ func (m *Manager) Run(ctx context.Context, interval time.Duration) {
 //  3. SRS'te artık olmayan .ts oturumlarını siler,
 //  4. saklama süresi dolan HLS oturum kayıtlarını siler.
 //
-// Adımlar birbirinden bağımsızdır: biri başarısız olsa da diğerleri çalışır.
+// Origin ve .ts dağıtıcısı ayrı SRS'lerdir ve adımları birbirinden bağımsız çalışır: biri yanıt
+// vermese de diğerinin işi gecikmez. Geçişin tamamı passTimeout ile sınırlıdır.
 func (m *Manager) EnforceOnce(ctx context.Context) error {
-	return errors.Join(
+	ctx, cancel := context.WithTimeout(ctx, passTimeout)
+	defer cancel()
+
+	var originErr error
+	originDone := make(chan struct{})
+	go func() {
+		defer close(originDone)
+		originErr = m.kickAll(ctx, m.origin, m.store.SuspendedLivePublishers)
+	}()
+	tsErr := errors.Join(
 		m.kickAll(ctx, m.ts, m.store.TSSessionsToKick),
-		m.kickAll(ctx, m.origin, m.store.SuspendedLivePublishers),
 		m.reconcile(ctx),
-		m.expire(ctx),
 	)
+	<-originDone
+	return errors.Join(tsErr, originErr, m.expire(ctx))
 }
 
+// kickAll, listedeki bağlantıları keser. SRS'in reddettiği bir kesme (ör. bağlantı zaten kopmuş)
+// diğerlerini engellemez; SRS'e ulaşılamıyorsa bu geçişte o SRS için denemeler durur.
 func (m *Manager) kickAll(ctx context.Context, srs SRS, list func(context.Context) ([]string, error)) error {
 	ids, err := list(ctx)
 	if err != nil {
@@ -119,7 +135,15 @@ func (m *Manager) kickAll(ctx context.Context, srs SRS, list func(context.Contex
 	}
 	var errs []error
 	for _, id := range ids {
-		errs = append(errs, srs.Kick(ctx, id))
+		err := srs.Kick(ctx, id)
+		var rejected *srsapi.StatusError
+		switch {
+		case err == nil:
+		case errors.As(err, &rejected):
+			errs = append(errs, err)
+		default:
+			return errors.Join(append(errs, err)...)
+		}
 	}
 	return errors.Join(errs...)
 }

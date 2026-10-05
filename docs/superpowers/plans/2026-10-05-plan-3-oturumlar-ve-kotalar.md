@@ -20,7 +20,7 @@
 ## Review Focus
 
 1. **Kanal değiştirme:** Limiti 1 olan izleyici kanal değiştirdiğinde beklememeli; eski izleme yeni izlemeye yer açmalı.
-2. **Paylaşılan HLS adresi:** Aynı adres başka bir ağdan açılırsa ayrı bağlantı sayılmalı; yerinden edilen taraf aynı adresle geri dönememeli.
+2. **Paylaşılan HLS adresi:** Bir adres aynı anda iki ağdan kullanılamamalı; yerinden edilen adres hiçbir ağdan geri dönememeli.
 3. **SRS çökmesi:** "İzleme bitti" bildirimi gelmezse `.ts` oturumları sonsuza dek limit doldurmamalı.
 4. **Yarış durumu:** Aynı izleyicinin eşzamanlı iki oturum açılışı limiti aşmamalı.
 5. **Askıya alma:** Askıya alınan yayıncının süren yayını ve askıya alınan ya da süresi dolan izleyicinin süren `.ts` izlemesi kesilmeli.
@@ -31,9 +31,11 @@
 |---|---|---|
 | İzleyici limiti dolunca | En eski oturum sonlandırılır, yeni oturum kabul edilir | Boşta kalan HLS oturumu 30 saniye sayıldığı için "yeniyi reddet" kuralı kanal değiştirmeyi engellerdi. Hesabını paylaşanlar birbirini düşürür |
 | Yayıncı bağlantı kotası dolunca | Yeni izleyici reddedilir | Bir izleyicinin başka bir izleyiciyi düşürmesi kabul edilemez |
-| HLS oturum kimliği | (imzadaki rastgele anahtar, istemci adresi) | Paylaşılan adresin tek bağlantı sayılmasını önler. IPv6'da adres /64 önekidir |
+| HLS oturum kimliği | İmzadaki rastgele anahtar; oturum aynı anda tek bir ağdan kullanılabilir | Başka ağdan açılan adres oturumu oraya taşır (Wi-Fi'den mobil veriye geçen izleyici devam eder). Taşınan oturum 1 dakika dolmadan yeniden taşınamaz; böylece adresi paylaşan iki kişi sırayla izleyemez. IPv6'da ağ /64 önekidir |
 | HLS oturumunun boşta sayılması | Son istekten 30 saniye sonra | Çalma listesi yaklaşık 2 saniyede bir istenir |
-| Sonlandırılan HLS oturumu | Kaydı imza ömrü (6 saat) boyunca saklanır | Aynı adresin yeniden kullanılmasını önler |
+| Sonlandırılan HLS oturumu | Kaydı imza ömrü (6 saat) boyunca saklanır ve adres hiçbir ağdan geri dönemez | Yerinden edilen tarafın ağ değiştirerek geri gelmesini önler |
+| HLS son görülme zamanı | En sık 10 saniyede bir yazılır | HLS istekleri saniyede bir gelir; her birinde yazmak gereksiz yük olurdu |
+| Uygulama döngüsü | Origin ve `.ts` dağıtıcısı adımları bağımsız çalışır, geçiş 20 saniyeyle sınırlıdır | Yanıt vermeyen bir SRS, diğerindeki kesmeleri geciktirmemeli |
 | `.ts` oturumlarının eşitlenmesi | 5 saniyede bir SRS bağlantı listesiyle | SRS çökerse "izleme bitti" gelmez |
 | Origin'e RTMP ile izleme | Her zaman reddedilir | İzleyici yolu değildir ve oturum takibini karmaşıklaştırırdı |
 | SRT girişi | Bu plana alınmadı | Bağımsız bir iş; SRS'in SRT yetkilendirmesi ayrıca ölçülmeli |

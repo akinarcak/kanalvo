@@ -11,8 +11,21 @@ import (
 var (
 	// ErrSessionRevoked: oturum, bağlantı limiti yüzünden yerini daha yeni bir oturuma bırakmış.
 	ErrSessionRevoked = errors.New("store: oturum sonlandırılmış")
+	// ErrSessionMoved: HLS oturumu kısa süre önce başka bir ağa taşınmış; bu ağdan şimdilik kullanılamaz.
+	ErrSessionMoved = errors.New("store: oturum başka bir ağdan kullanılıyor")
 	// ErrTenantConnectionLimit: yayıncının toplam eşzamanlı bağlantı kotası dolu.
 	ErrTenantConnectionLimit = errors.New("store: yayıncının bağlantı kotası dolu")
+)
+
+const (
+	// hlsMoveCooldown: bir HLS oturumu başka bir ağa taşındıktan sonra bu süre dolmadan yeniden
+	// taşınamaz. Ağ değiştiren izleyici kesintisiz devam eder; aynı adresi paylaşan iki kişi ise
+	// sırayla izleyemez.
+	hlsMoveCooldown = time.Minute
+	// hlsTouchInterval: süren bir HLS oturumunun son görülme zamanı en sık bu aralıkla yazılır.
+	// HLS istekleri saniyede bir gelir; her birinde yazmak gereksiz yük olurdu. Oturumun boşta
+	// sayılma süresinden (idle) belirgin biçimde kısa olmalıdır.
+	hlsTouchInterval = 10 * time.Second
 )
 
 // Evicted, yeni bir oturuma yer açmak için sonlandırılan oturumdur.
@@ -27,19 +40,35 @@ type Evicted struct {
 // $1 her kullanımda idle süresidir (saniye).
 const activeSession = `NOT revoked AND (kind = 'ts' OR last_seen_at > now() - make_interval(secs => $1))`
 
-// TouchHLSSession, süren bir HLS oturumunun son görülme zamanını günceller; oturum yoksa veya
-// boşta kalmışsa bağlantı limitini uygulayarak açar. Oturum kimliği (anahtar, istemci adresi)
-// çiftidir: paylaşılan bir adres başka yerden açılırsa ayrı bir bağlantı sayılır.
+// TouchHLSSession, bir HLS isteğini oturumuna işler: süren oturumun son görülme zamanını
+// günceller; oturum yoksa, boşta kalmışsa veya başka bir ağa taşınıyorsa bağlantı limitini
+// uygulayarak kabul eder. Oturumun kimliği anahtarıdır; ip, o an kullanıldığı ağdır.
 func (s *Store) TouchHLSSession(ctx context.Context, viewerID, channelID int64, key, ip string, idle time.Duration) ([]Evicted, error) {
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE sessions SET last_seen_at = now()
-		WHERE kind = 'hls' AND session_key = $2 AND ip = $3 AND viewer_id = $4 AND `+activeSession,
-		idle.Seconds(), key, ip, viewerID)
-	if err != nil {
+	// Sık yol: kilit almadan tek okuma. Sonlandırılmış bir adresin yeniden denemeleri de burada
+	// reddedilir, böylece yayıncı satırının kilidini meşgul etmez.
+	var dead, sameIP, active, fresh, movable bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT revoked OR viewer_id <> $3,
+		       ip = $2,
+		       last_seen_at > now() - make_interval(secs => $4),
+		       last_seen_at > now() - make_interval(secs => $5),
+		       (ip_changed_at IS NULL OR ip_changed_at <= now() - make_interval(secs => $6))
+		FROM sessions WHERE kind = 'hls' AND session_key = $1`,
+		key, ip, viewerID, idle.Seconds(), hlsTouchInterval.Seconds(), hlsMoveCooldown.Seconds()).
+		Scan(&dead, &sameIP, &active, &fresh, &movable)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
 		return nil, err
-	}
-	if tag.RowsAffected() == 1 {
-		return nil, nil
+	case dead:
+		return nil, ErrSessionRevoked
+	case sameIP && active:
+		if !fresh {
+			_, err = s.pool.Exec(ctx, `UPDATE sessions SET last_seen_at = now() WHERE kind = 'hls' AND session_key = $1 AND NOT revoked`, key)
+		}
+		return nil, err
+	case !sameIP && !movable:
+		return nil, ErrSessionMoved
 	}
 	return s.admit(ctx, "hls", viewerID, channelID, key, ip, idle)
 }
@@ -58,27 +87,35 @@ func (s *Store) admit(ctx context.Context, kind string, viewerID, channelID int6
 	}
 	defer tx.Rollback(ctx)
 
-	// Yayıncı satırını kilitlemek, aynı yayıncıya ait oturum açılışlarını sıraya sokar.
+	// Yayıncı satırını kilitlemek, aynı yayıncıya ait oturum açılışlarını sıraya sokar; limit
+	// denetimi ile kayıt arasına başka bir açılış giremez. NO KEY: yayıncıya bağlı başka
+	// kayıtların (kanal, izleyici) eklenmesini engellemez.
 	var viewerMax, tenantMax int
 	var tenantID int64
 	err = tx.QueryRow(ctx, `
 		SELECT v.max_connections, t.id, t.max_connections
 		FROM viewers v JOIN tenants t ON t.id = v.tenant_id
-		WHERE v.id = $1 FOR UPDATE OF t`, viewerID).Scan(&viewerMax, &tenantID, &tenantMax)
+		WHERE v.id = $1 FOR NO KEY UPDATE OF t`, viewerID).Scan(&viewerMax, &tenantID, &tenantMax)
 	if err != nil {
 		return nil, notFound(err)
 	}
 
 	var rowID, owner int64
-	var revoked bool
-	err = tx.QueryRow(ctx, `SELECT id, viewer_id, revoked FROM sessions WHERE kind = $1 AND session_key = $2 AND ip = $3`,
-		kind, key, ip).Scan(&rowID, &owner, &revoked)
+	var revoked, movable bool
+	var rowIP string
+	err = tx.QueryRow(ctx, `
+		SELECT id, viewer_id, revoked, ip, (ip_changed_at IS NULL OR ip_changed_at <= now() - make_interval(secs => $3))
+		FROM sessions WHERE kind = $1 AND session_key = $2`,
+		kind, key, hlsMoveCooldown.Seconds()).Scan(&rowID, &owner, &revoked, &rowIP, &movable)
 	exists := err == nil
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
 	}
 	if exists && (revoked || owner != viewerID) {
 		return nil, ErrSessionRevoked
+	}
+	if exists && kind == "hls" && rowIP != ip && !movable {
+		return nil, ErrSessionMoved
 	}
 
 	rows, err := tx.Query(ctx, `
@@ -120,7 +157,12 @@ func (s *Store) admit(ctx context.Context, kind string, viewerID, channelID int6
 	}
 
 	if exists {
-		_, err = tx.Exec(ctx, `UPDATE sessions SET channel_id = $2, started_at = now(), last_seen_at = now() WHERE id = $1`, rowID, channelID)
+		_, err = tx.Exec(ctx, `
+			UPDATE sessions
+			SET channel_id = $2, started_at = now(), last_seen_at = now(),
+			    ip_changed_at = CASE WHEN ip <> $3 THEN now() ELSE ip_changed_at END,
+			    ip = $3
+			WHERE id = $1`, rowID, channelID, ip)
 	} else {
 		_, err = tx.Exec(ctx, `
 			INSERT INTO sessions (tenant_id, viewer_id, channel_id, kind, session_key, ip)

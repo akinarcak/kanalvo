@@ -107,11 +107,11 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Oturum kimliği (imzadaki anahtar, istemci adresi) çiftidir: paylaşılan bir adres başka
-	// yerden açılırsa ayrı bir bağlantı sayılır ve limit doluysa en eski bağlantının yerini alır.
+	// Oturumun kimliği imzadaki anahtardır ve aynı anda tek bir ağdan kullanılabilir: ağ değiştiren
+	// izleyici devam eder, adresi paylaşan ikinci kişi ise ilkini düşürür ve kısa süre geri alınamaz.
 	err = h.sessions.TouchHLS(r.Context(), v.ID, ch.ID, claims.Session, clientip.Key(r, h.trustProxyHeaders))
 	switch {
-	case errors.Is(err, store.ErrSessionRevoked), errors.Is(err, store.ErrTenantConnectionLimit):
+	case errors.Is(err, store.ErrSessionRevoked), errors.Is(err, store.ErrSessionMoved), errors.Is(err, store.ErrTenantConnectionLimit):
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	case err != nil:

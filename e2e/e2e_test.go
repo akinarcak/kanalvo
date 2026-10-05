@@ -379,6 +379,13 @@ func TestSingleChannelEndToEnd(t *testing.T) {
 		}
 	}
 
+	// SRS'in yönetim API'si (bağlantı listesi, bağlantı kesme) dışarıya açık hiçbir porttan sunulmamalı.
+	for _, u := range []string{tsURL + "/api/v1/clients/", tsURL + "/api/v1/streams/", originURL + "/api/v1/clients/", "http://localhost:1985/api/v1/clients/"} {
+		if body, _ := fetch(u, 64<<10); strings.Contains(string(body), `"clients"`) || strings.Contains(string(body), `"streams"`) {
+			t.Fatalf("SRS yönetim API'si dışarıdan erişilebilir: %s", u)
+		}
+	}
+
 	// SRS yetki sorguları izleyicilere açık portta bulunmamalı (yol varsa GET 405 döner).
 	if code, _ := probe(t, apiURL+"/hooks/srs/x/publish"); code != http.StatusNotFound {
 		t.Fatalf("SRS sorgu ucu dış portta erişilebilir görünüyor: durum %d", code)
