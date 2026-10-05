@@ -1,0 +1,36 @@
+listen              1935;
+max_connections     1000;
+daemon              off;
+srs_log_tank        console;
+
+http_api {
+    enabled         on;
+    listen          1985;
+}
+
+http_server {
+    enabled         on;
+    listen          8080;
+    dir             ./objs/nginx/html;
+}
+
+vhost __defaultVhost__ {
+    hls {
+        enabled         on;
+        hls_fragment    2;
+        hls_window      12;
+        hls_ctx         on;
+        hls_ts_ctx      on;
+    }
+    http_remux {
+        enabled     on;
+        mount       [vhost]/[app]/[stream].ts;
+    }
+    http_hooks {
+        enabled         on;
+        on_publish      __HOOK_BASE__/publish;
+        on_unpublish    __HOOK_BASE__/unpublish;
+        on_play         __HOOK_BASE__/play;
+        on_stop         __HOOK_BASE__/stop;
+    }
+}
