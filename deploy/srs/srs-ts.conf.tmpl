@@ -7,6 +7,12 @@ srs_log_tank        console;
 # info düzeyi, sorgu adresini (HOOK_SECRET) ve gövdesini (imza) loga yazar.
 srs_log_level_v2    warn;
 
+# API yalnızca iç ağdan kullanılır (oturum eşitleme ve bağlantı kesme); portu dışarıya açılmaz.
+http_api {
+    enabled         on;
+    listen          1985;
+}
+
 http_server {
     enabled         on;
     listen          8080;

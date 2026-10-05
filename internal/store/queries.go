@@ -19,12 +19,11 @@ func (s *Store) SetTenantStatus(ctx context.Context, id int64, status string) er
 	return err
 }
 
+// CreateChannel, yayıncının kanal kotası doluysa ErrQuotaExceeded döner.
 func (s *Store) CreateChannel(ctx context.Context, tenantID int64, name, secret string) (int64, error) {
-	var id int64
-	err := s.pool.QueryRow(ctx,
+	return s.insertWithinQuota(ctx, tenantID, "channels", "max_channels",
 		`INSERT INTO channels (tenant_id, name, stream_secret) VALUES ($1, $2, $3) RETURNING id`,
-		tenantID, name, secret).Scan(&id)
-	return id, err
+		tenantID, name, secret)
 }
 
 const channelSelect = `
@@ -90,12 +89,11 @@ func (s *Store) SetChannelCategory(ctx context.Context, channelID int64, categor
 	return err
 }
 
+// CreateViewer, yayıncının izleyici kotası doluysa ErrQuotaExceeded döner.
 func (s *Store) CreateViewer(ctx context.Context, tenantID int64, username, password string, maxConnections int) (int64, error) {
-	var id int64
-	err := s.pool.QueryRow(ctx,
+	return s.insertWithinQuota(ctx, tenantID, "viewers", "max_viewers",
 		`INSERT INTO viewers (tenant_id, username, password, max_connections) VALUES ($1, $2, $3, $4) RETURNING id`,
-		tenantID, username, password, maxConnections).Scan(&id)
-	return id, err
+		tenantID, username, password, maxConnections)
 }
 
 const viewerSelect = `
