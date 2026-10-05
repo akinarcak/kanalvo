@@ -2,7 +2,6 @@
 package play
 
 import (
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log"
@@ -10,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
+	"streamhub/internal/auth"
 	"streamhub/internal/store"
 	"streamhub/internal/token"
 )
@@ -29,17 +28,21 @@ type Options struct {
 
 type Handler struct {
 	store  *store.Store
+	auth   *auth.Authenticator
 	signer *token.Signer
 	opts   Options
 	now    func() time.Time
 }
 
-func New(s *store.Store, signer *token.Signer, opts Options, now func() time.Time) *Handler {
-	return &Handler{store: s, signer: signer, opts: opts, now: now}
+func New(s *store.Store, a *auth.Authenticator, signer *token.Signer, opts Options, now func() time.Time) *Handler {
+	return &Handler{store: s, auth: a, signer: signer, opts: opts, now: now}
 }
 
+// Register, Xtream oynatıcılarının kullandığı iki yol biçimini kaydeder:
+// /live/<kullanıcı>/<şifre>/<kanal>[.ts|.m3u8] ve kısa biçimi /<kullanıcı>/<şifre>/<kanal>.
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /live/{username}/{password}/{file}", h.serve)
+	mux.HandleFunc("GET /{username}/{password}/{file}", h.serve)
 }
 
 func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
@@ -50,22 +53,19 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	now := h.now()
 
-	// PostgreSQL geçersiz UTF-8 ve NUL baytını hatayla reddeder; böyle bir ad zaten var olamaz.
-	username := r.PathValue("username")
-	if !utf8.ValidString(username) || strings.ContainsRune(username, 0) {
+	v, err := h.auth.Viewer(r, r.PathValue("username"), r.PathValue("password"))
+	switch {
+	case errors.Is(err, auth.ErrRateLimited):
+		http.Error(w, "too many requests", http.StatusTooManyRequests)
+		return
+	case errors.Is(err, auth.ErrInvalid):
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
-	}
-	v, err := h.store.ViewerByUsername(r.Context(), username)
-	if errors.Is(err, store.ErrNotFound) {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-	if err != nil {
+	case err != nil:
 		internalError(w, err)
 		return
 	}
-	if subtle.ConstantTimeCompare([]byte(r.PathValue("password")), []byte(v.Password)) != 1 || !v.Usable(now) {
+	if !v.Usable(now) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -98,9 +98,13 @@ func (h *Handler) target(viewerID, channelID int64, ext string, now time.Time) s
 	return fmt.Sprintf("%s/live/%d.ts?token=%s", h.opts.TSBaseURL, channelID, h.signer.Sign(claims))
 }
 
+// parseFile, "<kanal>", "<kanal>.ts" veya "<kanal>.m3u8" biçimini çözer; uzantısız ad .ts sayılır.
 func parseFile(file string) (int64, string, bool) {
-	name, ext, found := strings.Cut(file, ".")
-	if !found || (ext != "ts" && ext != "m3u8") {
+	name, ext, hasExt := strings.Cut(file, ".")
+	if !hasExt {
+		ext = "ts"
+	}
+	if ext != "ts" && ext != "m3u8" {
 		return 0, "", false
 	}
 	id, err := strconv.ParseInt(name, 10, 64)

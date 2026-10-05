@@ -17,6 +17,7 @@ func valid() map[string]string {
 		"HOOK_SECRET":       strings.Repeat("h", 16),
 		"EDGE_TS_BASE_URL":  "http://edge:8081/",
 		"EDGE_HLS_BASE_URL": "http://edge:8000/",
+		"PUBLIC_BASE_URL":   "http://tv.example.com:8000/",
 		"SRS_API_URL":       "http://srs:1985",
 		"SRS_HLS_URL":       "http://srs:8080/",
 	}
@@ -29,6 +30,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if c.HTTPAddr != ":8000" || c.HooksAddr != ":8001" || c.TokenTTL != 5*time.Minute || c.HLSTokenTTL != 6*time.Hour {
 		t.Fatalf("varsayılanlar yanlış: %+v", c)
+	}
+	if c.PublicBaseURL != "http://tv.example.com:8000" || c.TrustProxyHeaders || c.LoginMaxFailures != 20 || c.LoginFailureWindow != 5*time.Minute {
+		t.Fatalf("giriş ayarı varsayılanları yanlış: %+v", c)
 	}
 	if c.EdgeTSBaseURL != "http://edge:8081" || c.EdgeHLSBaseURL != "http://edge:8000" || c.SRSHLSURL != "http://srs:8080" {
 		t.Fatalf("sondaki / silinmeli: %+v", c)
@@ -47,6 +51,18 @@ func TestLoadDurations(t *testing.T) {
 	}
 }
 
+func TestLoadLoginSettings(t *testing.T) {
+	m := valid()
+	m["TRUST_PROXY_HEADERS"], m["LOGIN_MAX_FAILURES"], m["LOGIN_FAILURE_WINDOW"] = "true", "7", "90s"
+	c, err := Load(env(m))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.TrustProxyHeaders || c.LoginMaxFailures != 7 || c.LoginFailureWindow != 90*time.Second {
+		t.Fatalf("giriş ayarları yanlış: %+v", c)
+	}
+}
+
 func TestLoadRejectsBadValues(t *testing.T) {
 	cases := map[string]func(map[string]string){
 		"eksik DATABASE_URL":      func(m map[string]string) { delete(m, "DATABASE_URL") },
@@ -60,6 +76,12 @@ func TestLoadRejectsBadValues(t *testing.T) {
 		"bozuk TOKEN_TTL":         func(m map[string]string) { m["TOKEN_TTL"] = "abc" },
 		"negatif TOKEN_TTL":       func(m map[string]string) { m["TOKEN_TTL"] = "-1m" },
 		"bozuk HLS_TOKEN_TTL":     func(m map[string]string) { m["HLS_TOKEN_TTL"] = "abc" },
+		"eksik PUBLIC_BASE_URL":   func(m map[string]string) { delete(m, "PUBLIC_BASE_URL") },
+		"yollu PUBLIC_BASE_URL":   func(m map[string]string) { m["PUBLIC_BASE_URL"] = "http://tv.example.com/iptv" },
+		"bozuk TRUST_PROXY":       func(m map[string]string) { m["TRUST_PROXY_HEADERS"] = "belki" },
+		"sıfır LOGIN_MAX":         func(m map[string]string) { m["LOGIN_MAX_FAILURES"] = "0" },
+		"bozuk LOGIN_MAX":         func(m map[string]string) { m["LOGIN_MAX_FAILURES"] = "çok" },
+		"bozuk LOGIN_WINDOW":      func(m map[string]string) { m["LOGIN_FAILURE_WINDOW"] = "abc" },
 		"aynı dinleme adresi":     func(m map[string]string) { m["HTTP_ADDR"], m["HOOKS_ADDR"] = ":9000", ":9000" },
 	}
 	for name, mutate := range cases {

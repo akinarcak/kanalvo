@@ -30,7 +30,22 @@ docker compose exec -T api streamhub seed-dev
 `seed-dev` bir deneme yayıncısı, kanalı ve izleyicisi oluşturur ve değerlerini yazar:
 
 - OBS → Ayarlar → Yayın → Özel: sunucu `rtmp://localhost/live`, yayın anahtarı `<channel_id>?secret=<stream_secret>`
-- İzleme: `http://localhost:8000/live/<username>/<password>/<channel_id>.ts` (veya `.m3u8`)
+- IPTV oynatıcısı (TiviMate, IPTV Smarters vb.) → "Xtream Codes" girişi: sunucu `http://localhost:8000`, kullanıcı adı `<username>`, şifre `<password>`
+- M3U listesi: `http://localhost:8000/get.php?username=<username>&password=<password>&type=m3u_plus&output=ts`
+- Doğrudan izleme: `http://localhost:8000/live/<username>/<password>/<channel_id>.ts` (veya `.m3u8`)
+
+Telefondaki veya televizyondaki bir oynatıcıdan denemek için `.env` içindeki `PUBLIC_BASE_URL`,
+`EDGE_TS_BASE_URL` ve `EDGE_HLS_BASE_URL` adreslerinde `localhost` yerine bilgisayarın ağ adresini yazın.
+
+## Ayarlar
+
+| Değişken | Anlamı | Varsayılan |
+|---|---|---|
+| `PUBLIC_BASE_URL` | Oynatıcıya girilen sunucu adresi; M3U adresleri bundan üretilir | zorunlu |
+| `EDGE_TS_BASE_URL`, `EDGE_HLS_BASE_URL` | İzleyicinin yönlendirildiği `.ts` ve HLS adresleri | zorunlu |
+| `LOGIN_MAX_FAILURES`, `LOGIN_FAILURE_WINDOW` | Bir IP bu sürede bu kadar hatalı giriş yaparsa süre bitene kadar 429 alır | 20, 5m |
+| `TRUST_PROXY_HEADERS` | İstemci IP'sini `X-Forwarded-For` başlığının son değerinden alır. Yalnızca API bu başlığı yazan bir vekilin arkasındayken açın; aksi halde giriş sınırı atlatılabilir | false |
+| `TOKEN_TTL`, `HLS_TOKEN_TTL` | `.ts` ve HLS imzalarının ömrü | 5m, 6h |
 
 `.env.example` içindeki değerler yalnızca yerel geliştirme içindir; sunucuda `TOKEN_KEY` ve
 `HOOK_SECRET` için yeni rastgele değerler üretin ve `EDGE_*` adreslerini dış alan adınıza göre ayarlayın.

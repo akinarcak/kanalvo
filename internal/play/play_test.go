@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"streamhub/internal/auth"
 	"streamhub/internal/play"
+	"streamhub/internal/ratelimit"
 	"streamhub/internal/store"
 	"streamhub/internal/testdb"
 	"streamhub/internal/token"
@@ -42,7 +44,10 @@ func must[T any](v T, err error) T {
 	return v
 }
 
-func setup(t *testing.T) *fixture {
+func setup(t *testing.T) *fixture { return setupWithLimit(t, 100) }
+
+// setupWithLimit, IP başına hatalı giriş eşiği verilen değer olan bir kurulum döner.
+func setupWithLimit(t *testing.T, maxFailures int) *fixture {
 	ctx := context.Background()
 	f := &fixture{t: t, store: testdb.New(t), signer: token.NewSigner([]byte(strings.Repeat("k", 32))), mux: http.NewServeMux()}
 	f.tenant = must(f.store.CreateTenant(ctx, "t"))
@@ -50,7 +55,8 @@ func setup(t *testing.T) *fixture {
 	f.viewer = must(f.store.CreateViewer(ctx, f.tenant, "ali", "pw", 1))
 	must(f.store.MarkLive(ctx, f.channel, "a"))
 	opts := play.Options{TSBaseURL: tsBase, HLSBaseURL: hlsBase, TSTokenTTL: tsTTL, HLSTokenTTL: hlsTTL}
-	play.New(f.store, f.signer, opts, func() time.Time { return now }).Register(f.mux)
+	authn := auth.New(f.store, ratelimit.New(maxFailures, time.Minute, time.Now), false)
+	play.New(f.store, authn, f.signer, opts, func() time.Time { return now }).Register(f.mux)
 	return f
 }
 
@@ -185,10 +191,49 @@ func TestOfflineChannelIsNotFound(t *testing.T) {
 func TestRejectsUnknownFileNames(t *testing.T) {
 	f := setup(t)
 	id := fmt.Sprint(f.channel)
-	for _, file := range []string{id, id + ".mp4", id + ".", id + ".ts.ts", "abc.ts", ".ts", "0.ts", "-1.ts", "999999.ts", id + ".TS"} {
+	for _, file := range []string{id + ".mp4", id + ".", id + ".ts.ts", "abc.ts", ".ts", "0.ts", "-1.ts", "999999.ts", id + ".TS"} {
 		if rec := f.get(f.path("ali", "pw", file)); rec.Code != http.StatusNotFound {
 			t.Errorf("%q: durum %d", file, rec.Code)
 		}
+	}
+}
+
+func TestShortAndExtensionlessForms(t *testing.T) {
+	f := setup(t)
+	id := fmt.Sprint(f.channel)
+	cases := map[string]string{
+		"/ali/pw/" + id:           tsBase + "/live/" + id + ".ts",
+		"/ali/pw/" + id + ".ts":   tsBase + "/live/" + id + ".ts",
+		"/live/ali/pw/" + id:      tsBase + "/live/" + id + ".ts",
+		"/ali/pw/" + id + ".m3u8": hlsBase + "/hls/",
+	}
+	for path, wantPrefix := range cases {
+		rec := f.get(path)
+		if rec.Code != http.StatusFound || !strings.HasPrefix(rec.Header().Get("Location"), wantPrefix) {
+			t.Errorf("%s: durum %d, adres %q", path, rec.Code, rec.Header().Get("Location"))
+		}
+	}
+	for _, path := range []string{"/ali/yanlis/" + id, "/yok/pw/" + id} {
+		if rec := f.get(path); rec.Code != http.StatusForbidden {
+			t.Errorf("%s: durum %d", path, rec.Code)
+		}
+	}
+	if rec := f.get("/ali/pw/abc"); rec.Code != http.StatusNotFound {
+		t.Errorf("geçersiz kanal: durum %d", rec.Code)
+	}
+}
+
+func TestTooManyFailedLoginsReturn429(t *testing.T) {
+	f := setupWithLimit(t, 2)
+	file := fmt.Sprintf("%d.ts", f.channel)
+	for i := 0; i < 2; i++ {
+		if rec := f.get(f.path("ali", "yanlis", file)); rec.Code != http.StatusForbidden {
+			t.Fatalf("%d. deneme: durum %d", i+1, rec.Code)
+		}
+	}
+	rec := f.get(f.path("ali", "pw", file))
+	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Location") != "" {
+		t.Fatalf("eşikten sonra 429 bekleniyordu: durum %d", rec.Code)
 	}
 }
 

@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -15,6 +16,9 @@ type Config struct {
 	DatabaseURL string
 	TokenKey    []byte
 	HookSecret  string
+	// PublicBaseURL, oynatıcıların Xtream uçlarına ulaştığı dış adrestir; M3U listesindeki
+	// yayın adresleri ve giriş yanıtındaki sunucu bilgisi bundan üretilir.
+	PublicBaseURL string
 	// EdgeTSBaseURL, izleyicinin kesintisiz .ts için yönlendirildiği dış adrestir.
 	EdgeTSBaseURL string
 	// EdgeHLSBaseURL, izleyicinin HLS için yönlendirildiği /hls geçidinin dış adresidir.
@@ -24,21 +28,30 @@ type Config struct {
 	SRSHLSURL   string
 	TokenTTL    time.Duration
 	HLSTokenTTL time.Duration
+	// TrustProxyHeaders, istemci IP'sinin X-Forwarded-For başlığından alınmasını sağlar.
+	// Yalnızca API bu başlığı kendisi yazan bir vekilin arkasındayken açılmalıdır.
+	TrustProxyHeaders bool
+	// Bir IP, LoginFailureWindow içinde LoginMaxFailures hatalı giriş yaparsa pencere bitene kadar engellenir.
+	LoginMaxFailures   int
+	LoginFailureWindow time.Duration
 }
 
 func Load(getenv func(string) string) (Config, error) {
 	c := Config{
-		HTTPAddr:       getenv("HTTP_ADDR"),
-		HooksAddr:      getenv("HOOKS_ADDR"),
-		DatabaseURL:    getenv("DATABASE_URL"),
-		TokenKey:       []byte(getenv("TOKEN_KEY")),
-		HookSecret:     getenv("HOOK_SECRET"),
-		EdgeTSBaseURL:  strings.TrimRight(getenv("EDGE_TS_BASE_URL"), "/"),
-		EdgeHLSBaseURL: strings.TrimRight(getenv("EDGE_HLS_BASE_URL"), "/"),
-		SRSAPIURL:      strings.TrimRight(getenv("SRS_API_URL"), "/"),
-		SRSHLSURL:      strings.TrimRight(getenv("SRS_HLS_URL"), "/"),
-		TokenTTL:       5 * time.Minute,
-		HLSTokenTTL:    6 * time.Hour,
+		HTTPAddr:           getenv("HTTP_ADDR"),
+		HooksAddr:          getenv("HOOKS_ADDR"),
+		DatabaseURL:        getenv("DATABASE_URL"),
+		TokenKey:           []byte(getenv("TOKEN_KEY")),
+		HookSecret:         getenv("HOOK_SECRET"),
+		PublicBaseURL:      strings.TrimRight(getenv("PUBLIC_BASE_URL"), "/"),
+		EdgeTSBaseURL:      strings.TrimRight(getenv("EDGE_TS_BASE_URL"), "/"),
+		EdgeHLSBaseURL:     strings.TrimRight(getenv("EDGE_HLS_BASE_URL"), "/"),
+		SRSAPIURL:          strings.TrimRight(getenv("SRS_API_URL"), "/"),
+		SRSHLSURL:          strings.TrimRight(getenv("SRS_HLS_URL"), "/"),
+		TokenTTL:           5 * time.Minute,
+		HLSTokenTTL:        6 * time.Hour,
+		LoginMaxFailures:   20,
+		LoginFailureWindow: 5 * time.Minute,
 	}
 	if c.HTTPAddr == "" {
 		c.HTTPAddr = ":8000"
@@ -49,7 +62,11 @@ func Load(getenv func(string) string) (Config, error) {
 	if c.HooksAddr == c.HTTPAddr {
 		return Config{}, fmt.Errorf("HOOKS_ADDR ile HTTP_ADDR aynı olamaz: %q", c.HTTPAddr)
 	}
-	for name, dst := range map[string]*time.Duration{"TOKEN_TTL": &c.TokenTTL, "HLS_TOKEN_TTL": &c.HLSTokenTTL} {
+	for name, dst := range map[string]*time.Duration{
+		"TOKEN_TTL":            &c.TokenTTL,
+		"HLS_TOKEN_TTL":        &c.HLSTokenTTL,
+		"LOGIN_FAILURE_WINDOW": &c.LoginFailureWindow,
+	} {
 		v := getenv(name)
 		if v == "" {
 			continue
@@ -60,10 +77,25 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 		*dst = d
 	}
+	if v := getenv("LOGIN_MAX_FAILURES"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			return Config{}, fmt.Errorf("LOGIN_MAX_FAILURES pozitif bir sayı olmalı: %q", v)
+		}
+		c.LoginMaxFailures = n
+	}
+	if v := getenv("TRUST_PROXY_HEADERS"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("TRUST_PROXY_HEADERS true veya false olmalı: %q", v)
+		}
+		c.TrustProxyHeaders = b
+	}
 	if c.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL boş olamaz")
 	}
 	for name, v := range map[string]string{
+		"PUBLIC_BASE_URL":   c.PublicBaseURL,
 		"EDGE_TS_BASE_URL":  c.EdgeTSBaseURL,
 		"EDGE_HLS_BASE_URL": c.EdgeHLSBaseURL,
 		"SRS_API_URL":       c.SRSAPIURL,
@@ -72,6 +104,10 @@ func Load(getenv func(string) string) (Config, error) {
 		u, err := url.Parse(v)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			return Config{}, fmt.Errorf("%s http(s) adresi olmalı: %q", name, v)
+		}
+		// Oynatıcılar sunucuyu alan adı ve port olarak kaydeder; alt yol taşıyamazlar.
+		if name == "PUBLIC_BASE_URL" && u.Path != "" {
+			return Config{}, fmt.Errorf("PUBLIC_BASE_URL yol içeremez: %q", v)
 		}
 	}
 	if len(c.TokenKey) < 32 {

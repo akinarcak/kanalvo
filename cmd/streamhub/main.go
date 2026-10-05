@@ -16,14 +16,17 @@ import (
 	"syscall"
 	"time"
 
+	"streamhub/internal/auth"
 	"streamhub/internal/config"
 	"streamhub/internal/hlsgw"
 	"streamhub/internal/hooks"
 	"streamhub/internal/httpserve"
 	"streamhub/internal/play"
+	"streamhub/internal/ratelimit"
 	"streamhub/internal/reconcile"
 	"streamhub/internal/store"
 	"streamhub/internal/token"
+	"streamhub/internal/xtream"
 )
 
 const (
@@ -58,6 +61,10 @@ func serve(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	publicBase, err := url.Parse(cfg.PublicBaseURL)
+	if err != nil {
+		return err
+	}
 	st, err := openStore(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
@@ -71,7 +78,10 @@ func serve(ctx context.Context) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok") })
-	play.New(st, signer, play.Options{
+	limiter := ratelimit.New(cfg.LoginMaxFailures, cfg.LoginFailureWindow, time.Now)
+	authn := auth.New(st, limiter, cfg.TrustProxyHeaders)
+	xtream.New(st, authn, publicBase, time.Now).Register(mux)
+	play.New(st, authn, signer, play.Options{
 		TSBaseURL:   cfg.EdgeTSBaseURL,
 		TSTokenTTL:  cfg.TokenTTL,
 		HLSBaseURL:  cfg.EdgeHLSBaseURL,

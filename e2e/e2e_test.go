@@ -74,6 +74,37 @@ func envValue(t *testing.T, key string) string {
 	return ""
 }
 
+// getJSON, adresi çağırır ve 200 yanıtının JSON gövdesini v içine çözer.
+func getJSON(t *testing.T, u string, v any) {
+	t.Helper()
+	resp, err := noRedirect.Get(u)
+	if err != nil {
+		t.Fatalf("istek başarısız: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("durum %d", resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
+		t.Fatalf("JSON çözülemedi: %v", err)
+	}
+}
+
+type xtreamAccount struct {
+	UserInfo struct {
+		Auth   int    `json:"auth"`
+		Status string `json:"status"`
+	} `json:"user_info"`
+	ServerInfo struct {
+		URL  string `json:"url"`
+		Port string `json:"port"`
+	} `json:"server_info"`
+}
+
+func (s seed) xtreamURL(script, extra string) string {
+	return fmt.Sprintf("%s/%s?username=%s&password=%s%s", apiURL, script, s.Username, s.Password, extra)
+}
+
 func (s seed) playURL(ext string) string {
 	return fmt.Sprintf("%s/live/%s/%s/%d.%s", apiURL, s.Username, s.Password, s.ChannelID, ext)
 }
@@ -169,6 +200,33 @@ func TestSingleChannelEndToEnd(t *testing.T) {
 		return isMPEGTS(body)
 	})
 
+	// Bir IPTV oynatıcısının yaptığı gibi: giriş, kanal listesi, M3U ve listedeki adresten izleme.
+	var account xtreamAccount
+	getJSON(t, s.xtreamURL("player_api.php", ""), &account)
+	if account.UserInfo.Auth != 1 || account.UserInfo.Status != "Active" || account.ServerInfo.URL != "localhost" || account.ServerInfo.Port != "8000" {
+		t.Fatalf("beklenmeyen giriş yanıtı: %+v", account)
+	}
+	var streams []struct {
+		StreamID int64  `json:"stream_id"`
+		Name     string `json:"name"`
+	}
+	getJSON(t, s.xtreamURL("player_api.php", "&action=get_live_streams"), &streams)
+	if len(streams) != 1 || streams[0].StreamID != s.ChannelID {
+		t.Fatalf("kanal listesi yalnızca bu yayıncının kanalını içermeli: %+v", streams)
+	}
+	m3u, _ := fetch(s.xtreamURL("get.php", "&type=m3u_plus&output=ts"), 64<<10)
+	listed := strings.Fields(string(m3u))
+	if !isPlaylist(m3u) || listed[len(listed)-1] != s.playURL("ts") {
+		t.Fatalf("M3U listesi beklenen yayın adresini içermiyor: %d satır", len(listed))
+	}
+	if body, _ := fetch(listed[len(listed)-1], 3*188); !isMPEGTS(body) {
+		t.Fatal("M3U listesindeki adres yayın döndürmedi")
+	}
+	shortURL := fmt.Sprintf("%s/%s/%s/%d", apiURL, s.Username, s.Password, s.ChannelID)
+	if code, loc := probe(t, shortURL); code != http.StatusFound || !strings.HasPrefix(loc, tsURL+"/live/") {
+		t.Fatalf("kısa adres yönlendirmedi: durum %d", code)
+	}
+
 	// HLS
 	_, hlsLocation := probe(t, s.playURL("m3u8"))
 	if !strings.HasPrefix(hlsLocation, apiURL+"/hls/") {
@@ -202,6 +260,14 @@ func TestSingleChannelEndToEnd(t *testing.T) {
 		if code, _ := probe(t, wrong.playURL(ext)); code != http.StatusForbidden {
 			t.Fatalf("yanlış şifrede %s için 403 bekleniyordu, gelen %d", ext, code)
 		}
+	}
+	var denied xtreamAccount
+	getJSON(t, wrong.xtreamURL("player_api.php", ""), &denied)
+	if denied.UserInfo.Auth != 0 {
+		t.Fatalf("yanlış şifreyle giriş kabul edildi: %+v", denied)
+	}
+	if body, _ := fetch(wrong.xtreamURL("get.php", ""), 64<<10); isPlaylist(body) {
+		t.Fatal("yanlış şifreyle M3U listesi verildi")
 	}
 	forged := fmt.Sprintf("1.%d.9999999999.AAAA", s.ChannelID)
 	for _, direct := range []string{
