@@ -1,0 +1,206 @@
+# StreamHub — Tasarım Dokümanı
+
+Tarih: 2026-10-05
+Durum: İnceleme bekliyor
+
+## 1. Amaç
+
+Yayıncıların kendi OBS'leriyle canlı yayın açtığı, izleyicilerin Xtream Codes
+uyumlu IPTV oynatıcılarından (TiviMate, IPTV Smarters, VLC vb.) izlediği çok
+kiracılı bir canlı yayın platformu.
+
+- Bağımsız bir yazılımdır; Arcak One'a kod veya altyapı bağımlılığı yoktur.
+- Başlangıçta gelir hedefi yoktur; ödeme ve bayi katmanı kapsam dışıdır.
+- Tek bir VPS'te çalışır, kod değişikliği olmadan edge sunucu eklenerek büyür.
+- Platform yalnızca yayıncının kendi ürettiği veya lisansına sahip olduğu
+  içerik için tasarlanmıştır.
+
+### Başarı ölçütleri
+
+1. Yayıncı, panelde gördüğü sunucu adresi ve anahtarı OBS'e yazarak yayın açar.
+2. İzleyici, sunucu adresi + kullanıcı adı + şifre ile bir Xtream oynatıcısına
+   giriş yapar, yalnızca kendi yayıncısının kanallarını görür ve izler.
+3. Yayın hem `.ts` hem `.m3u8` biçiminde izlenebilir.
+4. Bir yayıncı başka bir yayıncının kanalını, izleyicisini veya oturumunu
+   hiçbir yoldan göremez.
+5. İkinci bir sunucu edge olarak kaydedildiğinde izleyiciler iki sunucuya
+   dağıtılır.
+
+### Kapsam dışı (ilk sürüm)
+
+Transcode / çoklu bitrate, kayıt ve arşiv (VOD), EPG, ödeme ve abonelik
+satışı, bayi yönetimi, serbest yayıncı kaydı, davetle kayıt, web oynatıcı,
+yayıncıya özel alt alan adı, Redis, OBS'i panelden uzaktan kontrol.
+
+## 2. Yaklaşım
+
+Hazır bir medya sunucusu (SRS) üzerine kendi kontrol katmanımızı yazıyoruz.
+
+Değerlendirilen seçenekler:
+
+| Seçenek | Sonuç |
+|---|---|
+| SRS + kendi kontrol katmanı | **Seçildi.** RTMP/SRT girişi, HLS, kesintisiz `.ts` çıkışı ve edge modu hazır. |
+| MediaMTX + kendi kontrol katmanı | Reddedildi. Kesintisiz `.ts` çıkışı hazır değil; ek FFmpeg hattı gerekir. |
+| Her şey tek uygulamada | Reddedildi. Medya sunucusu yazmak asıl hedefi geciktirir. |
+
+Uygulama öncesinde doğrulanacak varsayımlar (geliştirme sırasının 1. adımı
+bunları sınar):
+
+- SRS, HTTP üzerinden kesintisiz MPEG-TS çıkışı verir.
+- SRS, HLS izlemeleri için de izleme başladı/bitti bildirimi gönderir.
+- SRS, yayın anahtarındaki sorgu parametrelerini yetki sorgusuna aktarır.
+
+Biri doğrulanamazsa tasarım o noktada durur ve gözden geçirilir.
+
+## 3. Mimari
+
+| Bileşen | Görevi | Kaynak |
+|---|---|---|
+| SRS (origin) | OBS'ten RTMP/SRT yayını alır, HLS ve `.ts` üretir | Hazır |
+| Kontrol API'si | Xtream uçları, panel API'si, SRS yetki sorguları, imzalı adres üretimi | Go ile yazılır |
+| Panel | Yönetici ve yayıncı ekranları | React ile yazılır, API programına gömülür |
+| PostgreSQL | Kalıcı kayıtlar ve aktif oturumlar | Hazır |
+| Edge | Yayını izleyiciye dağıtır (SRS edge + nginx) | Hazır |
+| Ters vekil | TLS ve alan adı yönlendirmesi (Caddy) | Hazır |
+
+- Tüm bileşenler Docker Compose ile tek komutta kalkar.
+- Tek VPS kurulumunda origin ve edge aynı makinededir; edge yine de ayrı bir
+  servis ve ayrı bir kayıttır.
+- Yük dağıtımı ayrı bir ürün değildir: API, izleme isteğini seçtiği edge'e
+  yönlendirir.
+
+### Kontrol API'sinin iç birimleri
+
+| Birim | Sorumluluk | Bağımlılık |
+|---|---|---|
+| `store` | PostgreSQL erişimi; her sorgu yayıncı kimliğiyle sınırlanır | PostgreSQL |
+| `auth` | Panel girişi, oturum çerezi, rol kontrolü | `store` |
+| `token` | İmzalı izleme adresi üretme ve doğrulama | Yok |
+| `balancer` | Sağlıklı edge'ler arasından ağırlığa göre seçim | `store` |
+| `session` | Oturum açma/kapama, limit hesabı, eskiyen oturum temizliği | `store` |
+| `xtream` | Xtream uçları ve yanıt biçimleri | `store`, `token`, `balancer` |
+| `hooks` | SRS'in yayın ve izleme sorguları | `store`, `token`, `session` |
+| `panelapi` | Yönetici ve yayıncı REST uçları | `store`, `auth` |
+
+## 4. Veri modeli
+
+| Kayıt | Alanlar |
+|---|---|
+| Yönetici | E-posta, şifre özeti |
+| Yayıncı | Ad, e-posta, şifre özeti, durum (aktif/askıda), kanal kotası, izleyici kotası, eşzamanlı bağlantı kotası |
+| Kategori | Yayıncı, ad, sıra |
+| Kanal | Yayıncı, kategori, ad, logo, gizli yayın anahtarı, durum (yayında/çevrimdışı), son yayın zamanı |
+| İzleyici | Yayıncı, kullanıcı adı, şifre, bitiş tarihi, bağlantı limiti, durum |
+| Edge | Ad, adres, durum, ağırlık, son sağlık sinyali |
+| Oturum | İzleyici, kanal, edge, IP, başlangıç, son görülme |
+
+Kurallar:
+
+- Kanal numarası platform genelinde tekildir (Xtream `stream_id`).
+- İzleyici kullanıcı adı platform genelinde tekildir; her izleyici tek bir
+  yayıncıya bağlıdır.
+- İzleyici şifresi sistem tarafından rastgele üretilir, yayıncı panelden
+  görebilir ve yenileyebilir. Xtream protokolü şifreyi adres içinde açık
+  taşıdığı için erişim anahtarı gibi ele alınır.
+- Yönetici ve yayıncı şifreleri Argon2 ile saklanır.
+- Yayıncı kaydındaki kota ve durum alanları, serbest kayıt eklendiğinde veri
+  yapısının değişmemesi için baştan vardır.
+
+## 5. Akışlar
+
+### Yayın açma
+
+1. Yayıncı panelde kanal oluşturur. Panel OBS ayarlarını gösterir:
+   sunucu `rtmp://<yayın alan adı>/live`, anahtar `<kanal no>?secret=<gizli anahtar>`.
+2. OBS bağlanınca SRS API'ye sorar. API gizli anahtarı, yayıncının aktif
+   olduğunu ve kanalın başka bir bağlantıdan yayında olmadığını doğrular.
+3. Kabul edilirse kanal "yayında" olur.
+4. Yayın bitince SRS haber verir, kanal "çevrimdışı" olur.
+
+Yayın SRS içinde kanal numarasıyla adlandırılır; gizli anahtar izleyiciye
+giden hiçbir adreste yer almaz.
+
+### İzleme
+
+1. Oynatıcı `/live/<kullanıcı>/<şifre>/<kanal no>.ts` veya `.m3u8` ister.
+2. API izleyiciyi, durumunu, bitiş tarihini ve kanalın izleyicinin
+   yayıncısına ait olduğunu doğrular.
+3. API sağlıklı edge'lerden birini ağırlığa göre seçer.
+4. API, birkaç dakika geçerli imzalı adresle o edge'e yönlendirir (302).
+5. Edge'deki SRS izleme başlarken API'ye sorar. API imzayı ve bağlantı
+   limitini doğrular, oturumu açar.
+6. İzleme bitince SRS haber verir, oturum kapanır.
+
+### Xtream uçları
+
+| Uç | Davranış |
+|---|---|
+| `player_api.php` (eylemsiz) | Hesap ve sunucu bilgisi |
+| `get_live_categories` | İzleyicinin yayıncısına ait kategoriler |
+| `get_live_streams` | İzleyicinin yayıncısına ait kanallar |
+| `get_vod_categories`, `get_vod_streams`, `get_series_categories`, `get_series` | Boş liste |
+| `get_short_epg`, `get_simple_data_table` | Boş liste |
+| `get.php` | M3U çalma listesi (`output=ts` veya `m3u8`) |
+| `xmltv.php` | Boş program rehberi |
+| `/live/<k>/<ş>/<no>.<uzantı>` ve `/<k>/<ş>/<no>` | Edge'e imzalı yönlendirme |
+
+### Panel
+
+| Rol | Yapabildikleri |
+|---|---|
+| Yönetici | Yayıncı oluşturma, askıya alma, kota belirleme; edge kaydetme ve durumunu görme; platform geneli canlı kanal ve oturum sayıları |
+| Yayıncı | Kategori ve kanal yönetimi, OBS ayarlarını görme, yayın anahtarı yenileme, izleyici oluşturma/askıya alma/şifre yenileme, kendi canlı oturumlarını görme |
+
+## 6. Güvenlik
+
+- Her panel isteğinde yayıncı kimliği sunucu tarafında oturumdan alınır;
+  istekle gelen yayıncı kimliğine güvenilmez.
+- İmzalı adres izleyici, kanal ve son geçerlilik zamanını içerir, HMAC-SHA256
+  ile imzalanır. Başlamış izleme süre dolunca kesilmez.
+- İmzalı adres geçerlilik süresi içinde paylaşılabilir; bağlantı limiti bunu
+  sınırlar. IP'ye bağlama seçeneği vardır, varsayılan olarak kapalıdır.
+- Xtream uçlarında IP başına hatalı giriş sınırı uygulanır.
+- SRS'in API'ye yaptığı sorgular yalnızca iç ağdan ve paylaşılan sır ile
+  kabul edilir.
+- Panel yalnızca HTTPS üzerinden sunulur. Xtream uçları, HTTPS desteklemeyen
+  eski oynatıcılar için HTTP üzerinden de erişilebilir.
+
+## 7. Hata durumları
+
+| Durum | Davranış |
+|---|---|
+| Kanal çevrimdışıyken izleme isteği | 404 |
+| Geçersiz, süresi dolmuş veya askıdaki izleyici | Xtream biçiminde giriş reddi (`auth: 0`); yayın isteğinde 403 |
+| İzleyici başka yayıncının kanalını ister | 404 |
+| Bağlantı limiti aşıldı | Yeni bağlantı 403; mevcut izleme sürer |
+| Edge sağlık sinyali kesildi | Yönlendirmeden çıkar, sinyal dönünce geri eklenir |
+| Sağlıklı edge yok | 503 |
+| "İzleme bitti" bildirimi kayboldu | Son görülmesi eskiyen oturumlar periyodik temizlenir |
+| Yayıncı askıya alındı | Açık yayınları kesilir, izleyicileri giriş yapamaz |
+| Geçersiz yayın anahtarı veya kota aşımı | SRS yayını reddeder |
+| Aynı kanala ikinci yayın bağlantısı | İkincisi reddedilir |
+
+## 8. Test
+
+- **Birim:** imza üretme/doğrulama, edge seçimi, limit ve kota hesapları,
+  Xtream yanıt biçimleri.
+- **Entegrasyon:** gerçek PostgreSQL'e karşı API uçları; kiracı ayrımı her
+  uç için ayrıca sınanır.
+- **Uçtan uca:** Docker Compose ayağa kalkar, FFmpeg sahte yayın gönderir,
+  Xtream adresinden `.ts` ve `.m3u8` çekilip görüntü geldiği doğrulanır.
+- **Elle:** OBS ile yayın, en az iki gerçek oynatıcıda izleme.
+
+## 9. Geliştirme sırası
+
+1. Tek kanal uçtan uca: SRS, yayın anahtarı doğrulama, `.ts` ve `.m3u8`
+   izleme. Bölüm 2'deki SRS varsayımları burada doğrulanır.
+2. Xtream uçları ve izleyici hesapları.
+3. Yayıncı ayrımı, kotalar, bağlantı limiti, oturum takibi.
+4. Panel: yönetici ve yayıncı ekranları.
+5. Edge kaydı, sağlık sinyali ve yönlendirme; ikinci sunucuyla deneme.
+
+## 10. Sonraki aşamalar (bu dokümanın kapsamı dışında)
+
+Serbest yayıncı kaydı ve içerik denetimi, kayıt ve arşiv, transcode, EPG,
+yayıncıya özel alt alan adı, ödeme.
