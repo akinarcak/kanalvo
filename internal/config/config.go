@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -11,38 +12,56 @@ type Config struct {
 	DatabaseURL string
 	TokenKey    []byte
 	HookSecret  string
-	EdgeBaseURL string
-	SRSAPIURL   string
+	// EdgeTSBaseURL, izleyicinin kesintisiz .ts için yönlendirildiği dış adrestir.
+	EdgeTSBaseURL string
+	// EdgeHLSBaseURL, izleyicinin HLS için yönlendirildiği /hls geçidinin dış adresidir.
+	EdgeHLSBaseURL string
+	SRSAPIURL      string
+	// SRSHLSURL, geçidin HLS dosyalarını çektiği SRS HTTP sunucusunun iç adresidir.
+	SRSHLSURL   string
 	TokenTTL    time.Duration
+	HLSTokenTTL time.Duration
 }
 
 func Load(getenv func(string) string) (Config, error) {
 	c := Config{
-		HTTPAddr:    getenv("HTTP_ADDR"),
-		DatabaseURL: getenv("DATABASE_URL"),
-		TokenKey:    []byte(getenv("TOKEN_KEY")),
-		HookSecret:  getenv("HOOK_SECRET"),
-		EdgeBaseURL: strings.TrimRight(getenv("EDGE_BASE_URL"), "/"),
-		SRSAPIURL:   strings.TrimRight(getenv("SRS_API_URL"), "/"),
-		TokenTTL:    5 * time.Minute,
+		HTTPAddr:       getenv("HTTP_ADDR"),
+		DatabaseURL:    getenv("DATABASE_URL"),
+		TokenKey:       []byte(getenv("TOKEN_KEY")),
+		HookSecret:     getenv("HOOK_SECRET"),
+		EdgeTSBaseURL:  strings.TrimRight(getenv("EDGE_TS_BASE_URL"), "/"),
+		EdgeHLSBaseURL: strings.TrimRight(getenv("EDGE_HLS_BASE_URL"), "/"),
+		SRSAPIURL:      strings.TrimRight(getenv("SRS_API_URL"), "/"),
+		SRSHLSURL:      strings.TrimRight(getenv("SRS_HLS_URL"), "/"),
+		TokenTTL:       5 * time.Minute,
+		HLSTokenTTL:    6 * time.Hour,
 	}
 	if c.HTTPAddr == "" {
 		c.HTTPAddr = ":8000"
 	}
-	if v := getenv("TOKEN_TTL"); v != "" {
+	for name, dst := range map[string]*time.Duration{"TOKEN_TTL": &c.TokenTTL, "HLS_TOKEN_TTL": &c.HLSTokenTTL} {
+		v := getenv(name)
+		if v == "" {
+			continue
+		}
 		d, err := time.ParseDuration(v)
 		if err != nil || d <= 0 {
-			return Config{}, fmt.Errorf("TOKEN_TTL geçersiz: %q", v)
+			return Config{}, fmt.Errorf("%s geçersiz: %q", name, v)
 		}
-		c.TokenTTL = d
+		*dst = d
+	}
+	if c.DatabaseURL == "" {
+		return Config{}, fmt.Errorf("DATABASE_URL boş olamaz")
 	}
 	for name, v := range map[string]string{
-		"DATABASE_URL":  c.DatabaseURL,
-		"EDGE_BASE_URL": c.EdgeBaseURL,
-		"SRS_API_URL":   c.SRSAPIURL,
+		"EDGE_TS_BASE_URL":  c.EdgeTSBaseURL,
+		"EDGE_HLS_BASE_URL": c.EdgeHLSBaseURL,
+		"SRS_API_URL":       c.SRSAPIURL,
+		"SRS_HLS_URL":       c.SRSHLSURL,
 	} {
-		if v == "" {
-			return Config{}, fmt.Errorf("%s boş olamaz", name)
+		u, err := url.Parse(v)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return Config{}, fmt.Errorf("%s http(s) adresi olmalı: %q", name, v)
 		}
 	}
 	if len(c.TokenKey) < 32 {
