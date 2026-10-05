@@ -8,7 +8,10 @@ import (
 )
 
 type Config struct {
-	HTTPAddr    string
+	// HTTPAddr, izleyicilere açık dinleme adresidir.
+	HTTPAddr string
+	// HooksAddr, SRS yetki sorgularının dinlendiği adrestir; dışarıya açılmamalıdır.
+	HooksAddr   string
 	DatabaseURL string
 	TokenKey    []byte
 	HookSecret  string
@@ -26,6 +29,7 @@ type Config struct {
 func Load(getenv func(string) string) (Config, error) {
 	c := Config{
 		HTTPAddr:       getenv("HTTP_ADDR"),
+		HooksAddr:      getenv("HOOKS_ADDR"),
 		DatabaseURL:    getenv("DATABASE_URL"),
 		TokenKey:       []byte(getenv("TOKEN_KEY")),
 		HookSecret:     getenv("HOOK_SECRET"),
@@ -38,6 +42,12 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	if c.HTTPAddr == "" {
 		c.HTTPAddr = ":8000"
+	}
+	if c.HooksAddr == "" {
+		c.HooksAddr = ":8001"
+	}
+	if c.HooksAddr == c.HTTPAddr {
+		return Config{}, fmt.Errorf("HOOKS_ADDR ile HTTP_ADDR aynı olamaz: %q", c.HTTPAddr)
 	}
 	for name, dst := range map[string]*time.Duration{"TOKEN_TTL": &c.TokenTTL, "HLS_TOKEN_TTL": &c.HLSTokenTTL} {
 		v := getenv(name)

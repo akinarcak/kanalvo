@@ -179,6 +179,12 @@ kanalları çevrimdışı yapar; SRS'e ulaşılamazsa hiçbir kanala dokunmaz.
   ve bağlantı limiti gelene kadar (Plan 3) açıktır. IP'ye bağlama seçeneği
   sonraya bırakılmıştır.
 - Origin SRS'in HTTP portu dışarıya açılmaz; HLS yalnızca geçitten verilir.
+- İmza hangi yol için üretildiğini taşır (`.ts` veya HLS); uzun ömürlü HLS
+  imzası `.ts` ve RTMP izlemesinde geçmez.
+- SRS sorguları API'nin ayrı bir portunda (varsayılan 8001) dinlenir ve bu
+  port dışarıya açılmaz.
+- SRS, reddettiği sorguların adresini ve gövdesini hata loguna yazar; SRS
+  logları gizli veri sayılır (ayrıntı: `docs/srs-findings.md`).
 - Xtream uçlarında IP başına hatalı giriş sınırı uygulanır.
 - SRS'in API'ye yaptığı sorgular yalnızca iç ağdan ve paylaşılan sır ile
   kabul edilir.

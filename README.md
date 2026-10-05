@@ -9,7 +9,7 @@ OBS ile yayın açılan, Xtream uyumlu oynatıcılardan izlenen çok kiracılı 
 
 | Servis | Görevi | Dış port |
 |---|---|---|
-| `api` | Xtream yayın adresleri, HLS geçidi, SRS yetki sorguları | 8000 |
+| `api` | Xtream yayın adresleri ve HLS geçidi (8000); SRS yetki sorguları (8001, yalnızca iç ağ) | 8000 |
 | `srs` | OBS'ten RTMP yayını alır, HLS üretir | 1935 |
 | `srs-ts` | Kesintisiz MPEG-TS (`.ts`) dağıtır | 8081 |
 | `postgres` | Veritabanı | yalnızca 127.0.0.1:5432 |

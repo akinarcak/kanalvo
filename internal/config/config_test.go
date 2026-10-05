@@ -27,7 +27,7 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.HTTPAddr != ":8000" || c.TokenTTL != 5*time.Minute || c.HLSTokenTTL != 6*time.Hour {
+	if c.HTTPAddr != ":8000" || c.HooksAddr != ":8001" || c.TokenTTL != 5*time.Minute || c.HLSTokenTTL != 6*time.Hour {
 		t.Fatalf("varsayılanlar yanlış: %+v", c)
 	}
 	if c.EdgeTSBaseURL != "http://edge:8081" || c.EdgeHLSBaseURL != "http://edge:8000" || c.SRSHLSURL != "http://srs:8080" {
@@ -60,6 +60,7 @@ func TestLoadRejectsBadValues(t *testing.T) {
 		"bozuk TOKEN_TTL":         func(m map[string]string) { m["TOKEN_TTL"] = "abc" },
 		"negatif TOKEN_TTL":       func(m map[string]string) { m["TOKEN_TTL"] = "-1m" },
 		"bozuk HLS_TOKEN_TTL":     func(m map[string]string) { m["HLS_TOKEN_TTL"] = "abc" },
+		"aynı dinleme adresi":     func(m map[string]string) { m["HTTP_ADDR"], m["HOOKS_ADDR"] = ":9000", ":9000" },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {

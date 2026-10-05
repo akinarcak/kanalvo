@@ -19,6 +19,7 @@ import (
 	"streamhub/internal/config"
 	"streamhub/internal/hlsgw"
 	"streamhub/internal/hooks"
+	"streamhub/internal/httpserve"
 	"streamhub/internal/play"
 	"streamhub/internal/reconcile"
 	"streamhub/internal/store"
@@ -26,8 +27,10 @@ import (
 )
 
 const (
-	reconcileInterval = 15 * time.Second
-	reconcileGrace    = 10 * time.Second
+	reconcileInterval  = 15 * time.Second
+	reconcileGrace     = 10 * time.Second
+	srsResponseTimeout = 10 * time.Second
+	shutdownGrace      = 10 * time.Second
 )
 
 func main() {
@@ -62,31 +65,24 @@ func serve(ctx context.Context) error {
 	defer st.Close()
 
 	signer := token.NewSigner(cfg.TokenKey)
+	// SRS yetki sorguları ayrı, dışarıya açılmayan bir adreste dinlenir.
+	internal := http.NewServeMux()
+	hooks.New(st, signer, time.Now).Register(internal, cfg.HookSecret)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok") })
-	hooks.New(st, signer, time.Now).Register(mux, cfg.HookSecret)
 	play.New(st, signer, play.Options{
 		TSBaseURL:   cfg.EdgeTSBaseURL,
 		TSTokenTTL:  cfg.TokenTTL,
 		HLSBaseURL:  cfg.EdgeHLSBaseURL,
 		HLSTokenTTL: cfg.HLSTokenTTL,
 	}, time.Now).Register(mux)
-	hlsgw.New(st, signer, srsHLS, time.Now).Register(mux)
+	hlsgw.New(st, signer, srsHLS, srsResponseTimeout, time.Now).Register(mux)
 
 	go reconcile.New(st, cfg.SRSAPIURL, reconcileGrace).Run(ctx, reconcileInterval)
 
-	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		srv.Shutdown(shutdownCtx)
-	}()
-	log.Printf("streamhub %s adresinde dinliyor", cfg.HTTPAddr)
-	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
-		return err
-	}
-	return nil
+	log.Printf("streamhub dinliyor: izleyiciler %s, SRS sorguları %s", cfg.HTTPAddr, cfg.HooksAddr)
+	return httpserve.Run(ctx, shutdownGrace, httpserve.New(cfg.HTTPAddr, mux), httpserve.New(cfg.HooksAddr, internal))
 }
 
 // seedDev, yerel deneme için bir yayıncı, kanal ve izleyici oluşturur ve bilgilerini JSON olarak yazar.

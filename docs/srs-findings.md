@@ -83,3 +83,22 @@ dış adresler üzerinden:
 | SRS öldürülüp yeniden başlatıldı | Kanal yaklaşık 30 saniye içinde çevrimdışı oldu, yeni yayın kabul edildi |
 
 OBS ve masaüstü oynatıcıyla (VLC, TiviMate) elle doğrulama henüz yapılmadı.
+
+## Loglar ve gizli değerler (2026-10-05, gözden geçirme sonrası)
+
+| Durum | SRS loguna yazılan |
+|---|---|
+| `info` düzeyi (SRS varsayılanı), kabul edilen her sorgu | Sorgu adresi (`HOOK_SECRET` dahil) ve gövdesi (gizli yayın anahtarı, izleyici imzası) |
+| `warn` düzeyi (şimdiki ayar), kabul edilen sorgu | Hiçbiri |
+| `warn` düzeyi, reddedilen sorgu | Hata satırında sorgu adresi (`HOOK_SECRET` dahil) ve gövdesi (o istekte gönderilen `secret` veya `token`) |
+
+Reddedilen sorgu satırı SRS içinden kapatılamıyor. Sonuçları:
+
+- Yanlış anahtarla ya da sahte imzayla yapılan denemelerde loga düşen değer zaten geçersizdir.
+- Doğru anahtarla gelen ama reddedilen yayın (kanal zaten yayında, yayıncı askıda) gizli yayın
+  anahtarını SRS loguna yazar.
+- `HOOK_SECRET` her rette SRS loguna yazılır. Sorgu ucu dışarıya açık olmadığı için (8001,
+  yalnızca iç ağ) bu sır tek başına dışarıdan kullanılamaz.
+
+Bu yüzden SRS kapsayıcılarının logları gizli veri sayılmalı: erişimi kısıtlanmalı ve üçüncü
+taraf log servislerine gönderilmemelidir. API logları hiçbir gizli değer içermez.

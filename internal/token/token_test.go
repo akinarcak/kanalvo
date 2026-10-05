@@ -13,25 +13,27 @@ var (
 )
 
 func TestSignVerifyRoundTrip(t *testing.T) {
-	in := Claims{ViewerID: 7, ChannelID: 42, ExpiresAt: now.Add(5 * time.Minute)}
-	got, err := signer.Verify(signer.Sign(in), now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.ViewerID != 7 || got.ChannelID != 42 || !got.ExpiresAt.Equal(in.ExpiresAt) {
-		t.Fatalf("beklenmeyen içerik: %+v", got)
+	for _, kind := range []Kind{KindTS, KindHLS} {
+		in := Claims{Kind: kind, ViewerID: 7, ChannelID: 42, ExpiresAt: now.Add(5 * time.Minute)}
+		got, err := signer.Verify(signer.Sign(in), now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Kind != kind || got.ViewerID != 7 || got.ChannelID != 42 || !got.ExpiresAt.Equal(in.ExpiresAt) {
+			t.Fatalf("beklenmeyen içerik: %+v", got)
+		}
 	}
 }
 
 func TestTokenIsURLSafe(t *testing.T) {
-	tok := signer.Sign(Claims{ViewerID: 1, ChannelID: 2, ExpiresAt: now})
+	tok := signer.Sign(Claims{Kind: KindHLS, ViewerID: 1, ChannelID: 2, ExpiresAt: now})
 	if strings.ContainsAny(tok, "+/=?&# ") {
 		t.Fatalf("adres için güvenli olmayan karakter: %q", tok)
 	}
 }
 
 func TestVerifyExpiry(t *testing.T) {
-	tok := signer.Sign(Claims{ViewerID: 1, ChannelID: 2, ExpiresAt: now})
+	tok := signer.Sign(Claims{Kind: KindTS, ViewerID: 1, ChannelID: 2, ExpiresAt: now})
 	if _, err := signer.Verify(tok, now.Add(-time.Second)); err != nil {
 		t.Fatalf("süresi dolmamış imza kabul edilmeliydi: %v", err)
 	}
@@ -41,15 +43,19 @@ func TestVerifyExpiry(t *testing.T) {
 }
 
 func TestVerifyRejectsTampering(t *testing.T) {
-	tok := signer.Sign(Claims{ViewerID: 1, ChannelID: 2, ExpiresAt: now.Add(time.Minute)})
+	claims := Claims{Kind: KindTS, ViewerID: 1, ChannelID: 2, ExpiresAt: now.Add(time.Minute)}
+	tok := signer.Sign(claims)
 	other := NewSigner([]byte(strings.Repeat("x", 32)))
 	bad := []string{
 		"",
 		"abc",
-		"1.2.3",
-		strings.Replace(tok, "1.2.", "1.3.", 1),
+		"t.1.2.3",
+		strings.Replace(tok, "t.1.2.", "t.1.3.", 1),
+		strings.Replace(tok, "t.", "h.", 1),
 		tok + "A",
-		other.Sign(Claims{ViewerID: 1, ChannelID: 2, ExpiresAt: now.Add(time.Minute)}),
+		other.Sign(claims),
+		signer.Sign(Claims{Kind: "x", ViewerID: 1, ChannelID: 2, ExpiresAt: now.Add(time.Minute)}),
+		signer.Sign(Claims{ViewerID: 1, ChannelID: 2, ExpiresAt: now.Add(time.Minute)}),
 	}
 	for _, b := range bad {
 		if _, err := signer.Verify(b, now); !errors.Is(err, ErrInvalid) {

@@ -67,12 +67,12 @@ func setup(t *testing.T) *fixture {
 	}))
 	t.Cleanup(srs.Close)
 
-	hlsgw.New(f.store, f.signer, must(url.Parse(srs.URL)), func() time.Time { return now }).Register(f.mux)
+	hlsgw.New(f.store, f.signer, must(url.Parse(srs.URL)), time.Second, func() time.Time { return now }).Register(f.mux)
 	return f
 }
 
 func (f *fixture) token(viewer, channel int64, exp time.Time) string {
-	return f.signer.Sign(token.Claims{ViewerID: viewer, ChannelID: channel, ExpiresAt: exp})
+	return f.signer.Sign(token.Claims{Kind: token.KindHLS, ViewerID: viewer, ChannelID: channel, ExpiresAt: exp})
 }
 
 func (f *fixture) valid() string { return f.token(f.viewer, f.channel, now.Add(time.Hour)) }
@@ -132,6 +132,9 @@ func TestRejectsBadTokens(t *testing.T) {
 			return f.token(f.viewer, other, now.Add(time.Hour))
 		},
 		"olmayan izleyici": func(f *fixture) string { return f.token(f.viewer+999, f.channel, now.Add(time.Hour)) },
+		"kısa ömürlü .ts imzası": func(f *fixture) string {
+			return f.signer.Sign(token.Claims{Kind: token.KindTS, ViewerID: f.viewer, ChannelID: f.channel, ExpiresAt: now.Add(time.Hour)})
+		},
 		"askıda izleyici": func(f *fixture) string {
 			f.store.SetViewerStatus(ctx, f.viewer, "suspended")
 			return f.valid()
@@ -202,11 +205,32 @@ func TestUpstreamDownIsBadGateway(t *testing.T) {
 	f := setup(t)
 	mux := http.NewServeMux()
 	dead := must(url.Parse("http://127.0.0.1:1"))
-	hlsgw.New(f.store, f.signer, dead, func() time.Time { return now }).Register(mux)
+	hlsgw.New(f.store, f.signer, dead, time.Second, func() time.Time { return now }).Register(mux)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hls/"+f.valid()+"/1.m3u8", nil))
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("durum %d", rec.Code)
+	}
+}
+
+func TestHungUpstreamIsBadGateway(t *testing.T) {
+	f := setup(t)
+	release := make(chan struct{})
+	hung := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-release }))
+	t.Cleanup(hung.Close)
+	t.Cleanup(func() { close(release) })
+
+	mux := http.NewServeMux()
+	hlsgw.New(f.store, f.signer, must(url.Parse(hung.URL)), 200*time.Millisecond, func() time.Time { return now }).Register(mux)
+
+	start := time.Now()
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hls/"+f.valid()+"/1.m3u8", nil))
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("durum %d", rec.Code)
+	}
+	if took := time.Since(start); took > 3*time.Second {
+		t.Fatalf("yanıt vermeyen SRS geçidi %s bekletti", took)
 	}
 }

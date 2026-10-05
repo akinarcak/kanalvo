@@ -103,7 +103,7 @@ func (h *Handler) onPlay(ctx context.Context, ev Event) int {
 	}
 	now := h.now()
 	claims, err := h.signer.Verify(param(ev.Param, "token"), now)
-	if err != nil || claims.ChannelID != id {
+	if err != nil || claims.Kind != token.KindTS || claims.ChannelID != id {
 		return http.StatusForbidden
 	}
 	v, err := h.store.ViewerByID(ctx, claims.ViewerID)

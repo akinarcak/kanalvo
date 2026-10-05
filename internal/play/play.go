@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"streamhub/internal/store"
 	"streamhub/internal/token"
@@ -49,7 +50,13 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	now := h.now()
 
-	v, err := h.store.ViewerByUsername(r.Context(), r.PathValue("username"))
+	// PostgreSQL geçersiz UTF-8 ve NUL baytını hatayla reddeder; böyle bir ad zaten var olamaz.
+	username := r.PathValue("username")
+	if !utf8.ValidString(username) || strings.ContainsRune(username, 0) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	v, err := h.store.ViewerByUsername(r.Context(), username)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -84,10 +91,10 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) target(viewerID, channelID int64, ext string, now time.Time) string {
 	claims := token.Claims{ViewerID: viewerID, ChannelID: channelID}
 	if ext == "m3u8" {
-		claims.ExpiresAt = now.Add(h.opts.HLSTokenTTL)
+		claims.Kind, claims.ExpiresAt = token.KindHLS, now.Add(h.opts.HLSTokenTTL)
 		return fmt.Sprintf("%s/hls/%s/%d.m3u8", h.opts.HLSBaseURL, h.signer.Sign(claims), channelID)
 	}
-	claims.ExpiresAt = now.Add(h.opts.TSTokenTTL)
+	claims.Kind, claims.ExpiresAt = token.KindTS, now.Add(h.opts.TSTokenTTL)
 	return fmt.Sprintf("%s/live/%d.ts?token=%s", h.opts.TSBaseURL, channelID, h.signer.Sign(claims))
 }
 

@@ -1,4 +1,4 @@
-// Package token, izleyiciyi edge'e yönlendiren kısa ömürlü imzalı değeri üretir ve doğrular.
+// Package token, izleyiciyi edge'e yönlendiren imzalı değeri üretir ve doğrular.
 package token
 
 import (
@@ -17,7 +17,17 @@ var (
 	ErrExpired = errors.New("token: süresi dolmuş")
 )
 
+// Kind, imzanın hangi izleme yolunda geçerli olduğunu belirtir. Uzun ömürlü HLS imzasının
+// yalnızca başlangıçta doğrulanan .ts yolunda kullanılmasını engeller.
+type Kind string
+
+const (
+	KindTS  Kind = "t"
+	KindHLS Kind = "h"
+)
+
 type Claims struct {
+	Kind      Kind
 	ViewerID  int64
 	ChannelID int64
 	ExpiresAt time.Time
@@ -29,9 +39,9 @@ type Signer struct {
 
 func NewSigner(key []byte) *Signer { return &Signer{key: key} }
 
-// Sign, "<izleyici>.<kanal>.<bitiş unix>.<imza>" biçiminde bir değer üretir.
+// Sign, "<tür>.<izleyici>.<kanal>.<bitiş unix>.<imza>" biçiminde bir değer üretir.
 func (s *Signer) Sign(c Claims) string {
-	payload := fmt.Sprintf("%d.%d.%d", c.ViewerID, c.ChannelID, c.ExpiresAt.Unix())
+	payload := fmt.Sprintf("%s.%d.%d.%d", c.Kind, c.ViewerID, c.ChannelID, c.ExpiresAt.Unix())
 	return payload + "." + s.mac(payload)
 }
 
@@ -45,18 +55,22 @@ func (s *Signer) Verify(tok string, now time.Time) (Claims, error) {
 		return Claims{}, ErrInvalid
 	}
 	parts := strings.Split(payload, ".")
-	if len(parts) != 3 {
+	if len(parts) != 4 {
+		return Claims{}, ErrInvalid
+	}
+	kind := Kind(parts[0])
+	if kind != KindTS && kind != KindHLS {
 		return Claims{}, ErrInvalid
 	}
 	var n [3]int64
-	for j, p := range parts {
+	for j, p := range parts[1:] {
 		v, err := strconv.ParseInt(p, 10, 64)
 		if err != nil {
 			return Claims{}, ErrInvalid
 		}
 		n[j] = v
 	}
-	c := Claims{ViewerID: n[0], ChannelID: n[1], ExpiresAt: time.Unix(n[2], 0)}
+	c := Claims{Kind: kind, ViewerID: n[0], ChannelID: n[1], ExpiresAt: time.Unix(n[2], 0)}
 	if !now.Before(c.ExpiresAt) {
 		return Claims{}, ErrExpired
 	}

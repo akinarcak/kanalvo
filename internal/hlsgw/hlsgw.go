@@ -30,10 +30,14 @@ type Handler struct {
 	proxy  *httputil.ReverseProxy
 }
 
-// New, upstream olarak SRS HTTP sunucusunun iç adresini alır.
-func New(s *store.Store, signer *token.Signer, upstream *url.URL, now func() time.Time) *Handler {
+// New, upstream olarak SRS HTTP sunucusunun iç adresini alır. SRS upstreamTimeout içinde
+// yanıt vermeye başlamazsa istek 502 ile sonlanır.
+func New(s *store.Store, signer *token.Signer, upstream *url.URL, upstreamTimeout time.Duration, now func() time.Time) *Handler {
 	base := strings.TrimRight(upstream.Path, "/")
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = upstreamTimeout
 	proxy := &httputil.ReverseProxy{
+		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(upstream)
 			// İmza ve izleyicinin sorgu parametreleri SRS'e aktarılmaz.
@@ -67,7 +71,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	now := h.now()
 
 	claims, err := h.signer.Verify(r.PathValue("token"), now)
-	if err != nil || claims.ChannelID != channelID {
+	if err != nil || claims.Kind != token.KindHLS || claims.ChannelID != channelID {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}

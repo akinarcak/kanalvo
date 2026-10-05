@@ -80,13 +80,13 @@ func (f *fixture) redirect(file string) (*url.URL, string) {
 	return must(url.Parse(raw)), raw
 }
 
-func (f *fixture) checkClaims(tok string, ttl time.Duration) {
+func (f *fixture) checkClaims(tok string, kind token.Kind, ttl time.Duration) {
 	f.t.Helper()
 	claims, err := f.signer.Verify(tok, now)
 	if err != nil {
 		f.t.Fatalf("imza doğrulanamadı: %v", err)
 	}
-	if claims.ViewerID != f.viewer || claims.ChannelID != f.channel || !claims.ExpiresAt.Equal(now.Add(ttl)) {
+	if claims.Kind != kind || claims.ViewerID != f.viewer || claims.ChannelID != f.channel || !claims.ExpiresAt.Equal(now.Add(ttl)) {
 		f.t.Fatalf("beklenmeyen içerik %+v", claims)
 	}
 }
@@ -98,7 +98,7 @@ func TestTSRedirectsToRelayWithShortToken(t *testing.T) {
 	if got := loc.Scheme + "://" + loc.Host + loc.Path; got != want {
 		t.Fatalf("adres %q, beklenen %q", got, want)
 	}
-	f.checkClaims(loc.Query().Get("token"), tsTTL)
+	f.checkClaims(loc.Query().Get("token"), token.KindTS, tsTTL)
 }
 
 func TestHLSRedirectsToGatewayWithTokenInPath(t *testing.T) {
@@ -112,7 +112,7 @@ func TestHLSRedirectsToGatewayWithTokenInPath(t *testing.T) {
 	if strings.Contains(tok, "/") {
 		t.Fatalf("imza tek yol parçası olmalı: %q", tok)
 	}
-	f.checkClaims(tok, hlsTTL)
+	f.checkClaims(tok, token.KindHLS, hlsTTL)
 }
 
 func TestRejectsInvalidViewer(t *testing.T) {
@@ -148,6 +148,16 @@ func TestRejectsInvalidViewer(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestUndecodableUsernameIsForbidden(t *testing.T) {
+	f := setup(t)
+	for _, user := range []string{"%00", "ali%00", "%ff", "%c3%28"} {
+		rec := f.get(f.path(user, "pw", fmt.Sprintf("%d.ts", f.channel)))
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s: durum %d", user, rec.Code)
+		}
 	}
 }
 

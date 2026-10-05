@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -46,6 +47,31 @@ func compose(t *testing.T, args ...string) []byte {
 		t.Fatalf("docker compose %s: %v\n%s", strings.Join(args[:2], " "), err, stderr.String())
 	}
 	return out
+}
+
+// rtmpPlay, origin'den RTMP ile 2 saniye izlemeyi dener; izleme reddedilirse hata döner.
+func rtmpPlay(channelID int64, query string) error {
+	cmd := exec.Command("docker", "compose", "--profile", "e2e", "run", "--rm", "ffmpeg",
+		"-v", "error", "-rw_timeout", "5000000", "-t", "2",
+		"-i", fmt.Sprintf("rtmp://srs/live/%d%s", channelID, query), "-f", "null", "-")
+	cmd.Dir = ".."
+	return cmd.Run()
+}
+
+// envValue, ../.env dosyasından bir değeri okur.
+func envValue(t *testing.T, key string) string {
+	t.Helper()
+	data, err := os.ReadFile("../.env")
+	if err != nil {
+		t.Fatalf(".env okunamadı: %v", err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), key+"="); ok {
+			return v
+		}
+	}
+	t.Fatalf(".env içinde %s yok", key)
+	return ""
 }
 
 func (s seed) playURL(ext string) string {
@@ -191,6 +217,22 @@ func TestSingleChannelEndToEnd(t *testing.T) {
 		}
 	}
 
+	// Origin'in RTMP portu dışarıya açıktır; izleme yalnızca geçerli .ts imzasıyla kabul edilmeli.
+	tsToken := tsLocation[strings.Index(tsLocation, "?token=")+len("?token="):]
+	if err := rtmpPlay(s.ChannelID, "?token="+tsToken); err != nil {
+		t.Fatalf("geçerli imzayla RTMP izleme çalışmalı (aksi halde aşağıdaki ret denetimleri anlamsız): %v", err)
+	}
+	for _, query := range []string{"", "?token=" + forged} {
+		if err := rtmpPlay(s.ChannelID, query); err == nil {
+			t.Fatalf("imzasız veya sahte imzalı RTMP izleme kabul edildi: %q", query)
+		}
+	}
+
+	// SRS yetki sorguları izleyicilere açık portta bulunmamalı (yol varsa GET 405 döner).
+	if code, _ := probe(t, apiURL+"/hooks/srs/x/publish"); code != http.StatusNotFound {
+		t.Fatalf("SRS sorgu ucu dış portta erişilebilir görünüyor: durum %d", code)
+	}
+
 	// Yayın bitince
 	if err := exec.Command("docker", "rm", "-f", pubName).Run(); err != nil {
 		t.Fatalf("yayıncı durdurulamadı: %v", err)
@@ -201,5 +243,24 @@ func TestSingleChannelEndToEnd(t *testing.T) {
 	})
 	if body, _ := fetch(playlistURL.String(), 64<<10); isPlaylist(body) {
 		t.Fatal("yayın bittikten sonra eski HLS adresi çalma listesi döndürmemeli")
+	}
+
+	// Kabul edilen yayın ve izlemeler hiçbir servisin loguna gizli değer bırakmamalı.
+	// SRS, reddettiği sorguların adresini (HOOK_SECRET) hata satırına yazar; bu engellenemez
+	// (bkz. docs/srs-findings.md), bu yüzden HOOK_SECRET yalnızca API logunda aranır.
+	apiLogs := string(compose(t, "logs", "--no-color", "api"))
+	allLogs := apiLogs + string(compose(t, "logs", "--no-color", "srs", "srs-ts"))
+	for name, secret := range map[string]string{
+		"gizli yayın anahtarı": s.StreamSecret,
+		"izleyici şifresi":     s.Password,
+		".ts imzası":           tsToken,
+		"TOKEN_KEY":            envValue(t, "TOKEN_KEY"),
+	} {
+		if strings.Contains(allLogs, secret) {
+			t.Errorf("servis loglarında %s görünüyor", name)
+		}
+	}
+	if strings.Contains(apiLogs, envValue(t, "HOOK_SECRET")) {
+		t.Error("API logunda HOOK_SECRET görünüyor")
 	}
 }

@@ -72,7 +72,7 @@ func (f *fixture) live() bool {
 }
 
 func (f *fixture) tokenFor(viewer, channel int64, exp time.Time) string {
-	return "?token=" + f.signer.Sign(token.Claims{ViewerID: viewer, ChannelID: channel, ExpiresAt: exp})
+	return "?token=" + f.signer.Sign(token.Claims{Kind: token.KindTS, ViewerID: viewer, ChannelID: channel, ExpiresAt: exp})
 }
 
 func (f *fixture) play(stream, param string) int {
@@ -205,6 +205,33 @@ func TestPlayRejectsTokenForOtherChannel(t *testing.T) {
 	param := f.tokenFor(f.viewer, f.channel, now.Add(time.Minute))
 	if code := f.play(fmt.Sprint(other), param); code != http.StatusForbidden {
 		t.Fatalf("durum %d", code)
+	}
+}
+
+func TestPlayRejectsHLSToken(t *testing.T) {
+	f := setup(t)
+	f.publish("a", "?secret=sek")
+	hls := f.signer.Sign(token.Claims{Kind: token.KindHLS, ViewerID: f.viewer, ChannelID: f.channel, ExpiresAt: now.Add(time.Hour)})
+	if code := f.play(fmt.Sprint(f.channel), "?token="+hls); code != http.StatusForbidden {
+		t.Fatalf("uzun ömürlü HLS imzası .ts izlemesinde geçmemeli: durum %d", code)
+	}
+}
+
+func TestPlayRejectsMalformedInput(t *testing.T) {
+	f := setup(t)
+	f.publish("a", "?secret=sek")
+	ch := fmt.Sprint(f.channel)
+	param := f.tokenFor(f.viewer, f.channel, now.Add(time.Minute))
+	cases := map[string]string{
+		"sayısal olmayan kanal": event("p1", "live", "abc", param),
+		"uzantılı kanal adı":    event("p1", "live", ch+".m3u8", param),
+		"yanlış uygulama":       event("p1", "other", ch, param),
+		"bozuk parametre":       event("p1", "live", ch, "?token=%zz"),
+	}
+	for name, body := range cases {
+		if code := f.post(hookSecret, "play", body); code != http.StatusForbidden {
+			t.Errorf("%s: durum %d", name, code)
+		}
 	}
 }
 
