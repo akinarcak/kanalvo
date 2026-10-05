@@ -423,10 +423,11 @@ func (h *Handler) listSessions(w http.ResponseWriter, r *http.Request, a actor) 
 		Kind      string `json:"kind"`
 		IP        string `json:"ip"`
 		StartedAt string `json:"started_at"`
+		Edge      string `json:"edge"`
 	}
 	out := make([]sessionJSON, 0, len(list))
 	for _, s := range list {
-		out = append(out, sessionJSON{ID: s.ID, Viewer: s.Viewer, Channel: s.Channel, Kind: s.Kind, IP: s.IP, StartedAt: formatTime(s.StartedAt)})
+		out = append(out, sessionJSON{ID: s.ID, Viewer: s.Viewer, Channel: s.Channel, Kind: s.Kind, IP: s.IP, StartedAt: formatTime(s.StartedAt), Edge: s.Edge})
 	}
 	ok(w, http.StatusOK, out)
 }

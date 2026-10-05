@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -47,9 +48,12 @@ type fixture struct {
 	s          *store.Store
 	m          *session.Manager
 	ts, origin *fakeSRS
-	tenant     int64
-	channel    int64
-	viewer     int64
+	// remote: uzak edge'lerin SRS'leri (edge numarasına göre).
+	remote  map[int64]*fakeSRS
+	local   int64
+	tenant  int64
+	channel int64
+	viewer  int64
 }
 
 func must[T any](v T, err error) T {
@@ -68,12 +72,32 @@ func ok(t *testing.T, err error) {
 
 func setup(t *testing.T) *fixture {
 	ctx := context.Background()
-	f := &fixture{t: t, s: testdb.New(t), ts: &fakeSRS{}, origin: &fakeSRS{}}
+	f := &fixture{t: t, s: testdb.New(t), ts: &fakeSRS{}, origin: &fakeSRS{}, remote: map[int64]*fakeSRS{}}
+	f.local = testdb.LocalEdge(t)
 	f.tenant = must(f.s.CreateTenant(ctx, "t"))
 	f.channel = must(f.s.CreateChannel(ctx, f.tenant, "c", "sek"))
 	f.viewer = must(f.s.CreateViewer(ctx, f.tenant, "ali", "pw", 1))
-	f.m = session.New(f.s, f.ts, f.origin, 30*time.Second, 6*time.Hour)
+	srsFor := func(e store.Edge) session.SRS {
+		if e.Builtin {
+			return f.ts
+		}
+		return f.remote[e.ID]
+	}
+	f.m = session.New(f.s, srsFor, f.origin, 30*time.Second, 6*time.Hour)
 	return f
+}
+
+// addEdge, kendi sahte SRS'i olan bir uzak edge kaydeder.
+func (f *fixture) addEdge(name string) (int64, *fakeSRS) {
+	id := must(f.s.CreateEdge(context.Background(), store.NewEdge{
+		Name: name, BaseURL: "http://" + name, ControlURL: "http://" + name, Key: "key-" + name, PullIP: "10.0.0.5", Weight: 100,
+	}))
+	f.remote[id] = &fakeSRS{}
+	return id, f.remote[id]
+}
+
+func (f *fixture) healthy(id int64) bool {
+	return must(f.s.EdgeByID(context.Background(), id, 15*time.Second)).Healthy
 }
 
 func (f *fixture) active() int {
@@ -83,21 +107,21 @@ func (f *fixture) active() int {
 func TestOpeningASessionKicksTheEvictedTSConnection(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
-	ok(t, f.m.OpenTS(ctx, f.viewer, f.channel, "c1", "1.1.1.1"))
-	ok(t, f.m.OpenTS(ctx, f.viewer, f.channel, "c2", "1.1.1.1"))
+	ok(t, f.m.OpenTS(ctx, f.local, f.viewer, f.channel, "c1", "1.1.1.1"))
+	ok(t, f.m.OpenTS(ctx, f.local, f.viewer, f.channel, "c2", "1.1.1.1"))
 	if f.ts.got() != "[c1]" {
 		t.Fatalf("yerinden edilen .ts bağlantısı kesilmeli: %s", f.ts.got())
 	}
-	ok(t, f.m.TouchHLS(ctx, f.viewer, f.channel, "k1", "1.1.1.1"))
+	ok(t, f.m.TouchHLS(ctx, f.local, f.viewer, f.channel, "k1", "1.1.1.1"))
 	if f.ts.got() != "[c1 c2]" {
 		t.Fatalf("HLS oturumu açılınca eski .ts bağlantısı kesilmeli: %s", f.ts.got())
 	}
 	// Yerinden edilen HLS oturumu için SRS'te kesilecek bir bağlantı yoktur.
-	ok(t, f.m.TouchHLS(ctx, f.viewer, f.channel, "k2", "1.1.1.1"))
+	ok(t, f.m.TouchHLS(ctx, f.local, f.viewer, f.channel, "k2", "1.1.1.1"))
 	if f.ts.got() != "[c1 c2]" || f.origin.got() != "[]" {
 		t.Fatalf("fazladan kesme isteği: ts=%s origin=%s", f.ts.got(), f.origin.got())
 	}
-	if err := f.m.TouchHLS(ctx, f.viewer, f.channel, "k1", "1.1.1.1"); !errors.Is(err, store.ErrSessionRevoked) {
+	if err := f.m.TouchHLS(ctx, f.local, f.viewer, f.channel, "k1", "1.1.1.1"); !errors.Is(err, store.ErrSessionRevoked) {
 		t.Fatalf("yerinden edilen HLS oturumu reddedilmeli, gelen: %v", err)
 	}
 }
@@ -106,8 +130,8 @@ func TestKickFailureDoesNotFailTheNewSession(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
 	f.ts.kickErr = errors.New("SRS yanıt vermiyor")
-	ok(t, f.m.OpenTS(ctx, f.viewer, f.channel, "c1", "1.1.1.1"))
-	if err := f.m.OpenTS(ctx, f.viewer, f.channel, "c2", "1.1.1.1"); err != nil {
+	ok(t, f.m.OpenTS(ctx, f.local, f.viewer, f.channel, "c1", "1.1.1.1"))
+	if err := f.m.OpenTS(ctx, f.local, f.viewer, f.channel, "c2", "1.1.1.1"); err != nil {
 		t.Fatalf("kesme başarısız olsa da yeni oturum açılmalı: %v", err)
 	}
 }
@@ -115,11 +139,11 @@ func TestKickFailureDoesNotFailTheNewSession(t *testing.T) {
 func TestCloseTS(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
-	ok(t, f.m.OpenTS(ctx, f.viewer, f.channel, "c1", "1.1.1.1"))
+	ok(t, f.m.OpenTS(ctx, f.local, f.viewer, f.channel, "c1", "1.1.1.1"))
 	if f.active() != 1 {
 		t.Fatal("oturum açılmalıydı")
 	}
-	ok(t, f.m.CloseTS(ctx, "c1"))
+	ok(t, f.m.CloseTS(ctx, f.local, "c1"))
 	if f.active() != 0 {
 		t.Fatal("oturum kapanmalıydı")
 	}
@@ -133,8 +157,8 @@ func TestEnforceKicksRevokedAndUnentitledConnections(t *testing.T) {
 	must(f.s.MarkLive(ctx, theirChannel, "yayinci-1"))
 	must(f.s.MarkLive(ctx, f.channel, "yayinci-saglam"))
 	banned := must(f.s.CreateViewer(ctx, f.tenant, "veli", "pw", 1))
-	ok(t, f.m.OpenTS(ctx, f.viewer, f.channel, "saglam", "1.1.1.1"))
-	ok(t, f.m.OpenTS(ctx, banned, f.channel, "askida", "1.1.1.1"))
+	ok(t, f.m.OpenTS(ctx, f.local, f.viewer, f.channel, "saglam", "1.1.1.1"))
+	ok(t, f.m.OpenTS(ctx, f.local, banned, f.channel, "askida", "1.1.1.1"))
 	f.ts.clients = []string{"saglam", "askida"}
 
 	ok(t, f.m.EnforceOnce(ctx))
@@ -162,7 +186,7 @@ func TestEnforceStepsAreIndependent(t *testing.T) {
 	must(f.s.MarkLive(ctx, theirChannel, "yayinci-1"))
 	for i, name := range []string{"a", "b", "c"} {
 		v := must(f.s.CreateViewer(ctx, other, name, "pw", 1))
-		ok(t, f.m.OpenTS(ctx, v, theirChannel, fmt.Sprintf("izleyici-%d", i), "1.1.1.1"))
+		ok(t, f.m.OpenTS(ctx, f.local, v, theirChannel, fmt.Sprintf("izleyici-%d", i), "1.1.1.1"))
 	}
 	ok(t, f.s.SetTenantStatus(ctx, other, "suspended"))
 
@@ -185,13 +209,13 @@ func TestQueuedKicksAreRetriedUntilTheySucceed(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
 	must(f.s.MarkLive(ctx, f.channel, "yayinci-1"))
-	ok(t, f.m.OpenTS(ctx, f.viewer, f.channel, "izleyen-1", "1.1.1.1"))
+	ok(t, f.m.OpenTS(ctx, f.local, f.viewer, f.channel, "izleyen-1", "1.1.1.1"))
 	ok(t, f.s.DeleteChannel(ctx, f.tenant, f.channel))
 
 	f.ts.kickErr = errors.New("SRS yanıt vermiyor")
 	f.origin.kickErr = errors.New("SRS yanıt vermiyor")
 	f.m.Flush(ctx)
-	if got := fmt.Sprint(must(f.s.PendingKicks(ctx, "origin")), must(f.s.PendingKicks(ctx, "ts"))); got != "[yayinci-1] [izleyen-1]" {
+	if got := fmt.Sprint(must(f.s.PendingOriginKicks(ctx)), must(f.s.PendingEdgeKicks(ctx, f.local))); got != "[yayinci-1] [izleyen-1]" {
 		t.Fatalf("kesilemeyen bağlantılar kuyrukta kalmalı: %s", got)
 	}
 
@@ -200,7 +224,7 @@ func TestQueuedKicksAreRetriedUntilTheySucceed(t *testing.T) {
 	if f.origin.got() != "[yayinci-1 yayinci-1]" || f.ts.got() != "[izleyen-1 izleyen-1]" {
 		t.Fatalf("yeniden denenmeli: origin=%s ts=%s", f.origin.got(), f.ts.got())
 	}
-	if got := fmt.Sprint(must(f.s.PendingKicks(ctx, "origin")), must(f.s.PendingKicks(ctx, "ts"))); got != "[] []" {
+	if got := fmt.Sprint(must(f.s.PendingOriginKicks(ctx)), must(f.s.PendingEdgeKicks(ctx, f.local))); got != "[] []" {
 		t.Fatalf("kesilen bağlantılar kuyruktan çıkmalı: %s", got)
 	}
 	ok(t, f.m.EnforceOnce(ctx))
@@ -217,7 +241,7 @@ func TestQueuedKickForAGoneConnectionIsResolved(t *testing.T) {
 	ok(t, f.s.DeleteChannel(ctx, f.tenant, f.channel))
 	f.origin.kickErr = &srsapi.StatusError{Op: "DELETE", Code: 2049}
 	f.m.Flush(ctx)
-	if got := must(f.s.PendingKicks(ctx, "origin")); len(got) != 0 {
+	if got := must(f.s.PendingOriginKicks(ctx)); len(got) != 0 {
 		t.Fatalf("var olmayan bağlantı kuyruktan çıkmalı: %v", got)
 	}
 }
@@ -225,7 +249,7 @@ func TestQueuedKickForAGoneConnectionIsResolved(t *testing.T) {
 func TestEnforceRemovesSessionsMissingFromSRS(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
-	ok(t, f.m.OpenTS(ctx, f.viewer, f.channel, "kayip", "1.1.1.1"))
+	ok(t, f.m.OpenTS(ctx, f.local, f.viewer, f.channel, "kayip", "1.1.1.1"))
 	testdb.Exec(t, `UPDATE sessions SET started_at = now() - interval '1 minute'`)
 
 	// SRS'e ulaşılamazsa oturumlara dokunulmaz.
@@ -248,11 +272,11 @@ func TestEnforceRemovesSessionsMissingFromSRS(t *testing.T) {
 func TestEnforceDeletesExpiredHLSSessions(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
-	ok(t, f.m.TouchHLS(ctx, f.viewer, f.channel, "k1", "1.1.1.1"))
-	ok(t, f.m.TouchHLS(ctx, f.viewer, f.channel, "k2", "1.1.1.1")) // k1 sonlandırıldı
+	ok(t, f.m.TouchHLS(ctx, f.local, f.viewer, f.channel, "k1", "1.1.1.1"))
+	ok(t, f.m.TouchHLS(ctx, f.local, f.viewer, f.channel, "k2", "1.1.1.1")) // k1 sonlandırıldı
 	testdb.Exec(t, `UPDATE sessions SET last_seen_at = now() - interval '5 hours' WHERE session_key = 'k1'`)
 	ok(t, f.m.EnforceOnce(ctx))
-	if err := f.m.TouchHLS(ctx, f.viewer, f.channel, "k1", "1.1.1.1"); !errors.Is(err, store.ErrSessionRevoked) {
+	if err := f.m.TouchHLS(ctx, f.local, f.viewer, f.channel, "k1", "1.1.1.1"); !errors.Is(err, store.ErrSessionRevoked) {
 		t.Fatalf("imza ömrü dolmadan sonlandırılmış oturum kaydı silinmemeli, gelen: %v", err)
 	}
 
@@ -260,5 +284,83 @@ func TestEnforceDeletesExpiredHLSSessions(t *testing.T) {
 	ok(t, f.m.EnforceOnce(ctx))
 	if n := testdb.Count(t, `SELECT count(*) FROM sessions`); n != 1 {
 		t.Fatalf("imza ömrü dolan oturum kaydı silinmeli, kalan: %d", n)
+	}
+}
+
+// Her edge kendi SRS'i üzerinden denetlenir: kesme ve eşitleme başka edge'in bağlantılarına dokunmaz.
+func TestEachEdgeIsEnforcedThroughItsOwnSRS(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	remote, remoteSRS := f.addEdge("e1")
+	banned := must(f.s.CreateViewer(ctx, f.tenant, "veli", "pw", 2))
+	ok(t, f.m.OpenTS(ctx, f.local, banned, f.channel, "yerel-askida", "1.1.1.1"))
+	ok(t, f.m.OpenTS(ctx, remote, banned, f.channel, "uzak-askida", "1.1.1.1"))
+	ok(t, f.m.OpenTS(ctx, remote, f.viewer, f.channel, "uzak-kayip", "1.1.1.1"))
+	testdb.Exec(t, `UPDATE sessions SET started_at = now() - interval '1 minute'`)
+	f.ts.clients = []string{"yerel-askida"}
+	// Uzak SRS'te "uzak-kayip" yok; yerel SRS'in listesinde olmaması onu ilgilendirmez.
+	remoteSRS.clients = []string{"uzak-askida", "yerel-askida"}
+	ok(t, f.s.SetViewerStatus(ctx, banned, "suspended"))
+
+	ok(t, f.m.EnforceOnce(ctx))
+	if f.ts.got() != "[yerel-askida]" || remoteSRS.got() != "[uzak-askida]" {
+		t.Fatalf("her bağlantı kendi edge'inde kesilmeli: yerel=%s uzak=%s", f.ts.got(), remoteSRS.got())
+	}
+	if n := testdb.Count(t, `SELECT count(*) FROM sessions WHERE session_key = 'uzak-kayip'`); n != 0 {
+		t.Fatal("uzak SRS'te olmayan oturum silinmeliydi")
+	}
+	if n := testdb.Count(t, `SELECT count(*) FROM sessions`); n != 2 {
+		t.Fatalf("SRS'lerde süren iki oturum kalmalıydı: %d", n)
+	}
+	if !f.healthy(f.local) || !f.healthy(remote) {
+		t.Fatal("yanıt veren edge'lerin sağlık sinyali kaydedilmeliydi")
+	}
+}
+
+// Ulaşılamayan edge sağlık sinyali vermez ve diğer edge'lerin denetimini engellemez.
+func TestUnreachableEdgeLosesHealthWithoutBlockingOthers(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	remote, remoteSRS := f.addEdge("e1")
+	ok(t, f.m.OpenTS(ctx, remote, f.viewer, f.channel, "uzak-c", "1.1.1.1"))
+	banned := must(f.s.CreateViewer(ctx, f.tenant, "veli", "pw", 1))
+	ok(t, f.m.OpenTS(ctx, f.local, banned, f.channel, "yerel-askida", "1.1.1.1"))
+	testdb.Exec(t, `UPDATE sessions SET started_at = now() - interval '1 minute'`)
+	ok(t, f.s.SetViewerStatus(ctx, banned, "suspended"))
+	f.ts.clients = []string{"yerel-askida"}
+	remoteSRS.listErr = errors.New("bağlantı reddedildi")
+	remoteSRS.kickErr = errors.New("bağlantı reddedildi")
+
+	err := f.m.EnforceOnce(ctx)
+	if err == nil || !strings.Contains(err.Error(), `edge "e1"`) {
+		t.Fatalf("hata ulaşılamayan edge'i adıyla bildirmeli: %v", err)
+	}
+	if f.ts.got() != "[yerel-askida]" {
+		t.Fatalf("yerel edge'in denetimi sürmeliydi: %s", f.ts.got())
+	}
+	if !f.healthy(f.local) || f.healthy(remote) {
+		t.Fatalf("sağlık: yerel=%v uzak=%v", f.healthy(f.local), f.healthy(remote))
+	}
+	if n := testdb.Count(t, `SELECT count(*) FROM sessions WHERE session_key = 'uzak-c'`); n != 1 {
+		t.Fatal("ulaşılamayan edge'in oturumu silinmemeliydi")
+	}
+
+	remoteSRS.listErr, remoteSRS.kickErr = nil, nil
+	remoteSRS.clients = []string{"uzak-c"}
+	ok(t, f.m.EnforceOnce(ctx))
+	if !f.healthy(remote) {
+		t.Fatal("yeniden yanıt veren edge sağlıklı sayılmalıydı")
+	}
+}
+
+// Limit dolunca yerinden edilen bağlantı, bulunduğu edge'in SRS'inde kesilir.
+func TestEvictedConnectionIsKickedOnItsOwnEdge(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	remote, remoteSRS := f.addEdge("e1")
+	ok(t, f.m.OpenTS(ctx, remote, f.viewer, f.channel, "uzak-c", "1.1.1.1"))
+	ok(t, f.m.OpenTS(ctx, f.local, f.viewer, f.channel, "yerel-c", "1.1.1.1"))
+	if remoteSRS.got() != "[uzak-c]" || f.ts.got() != "[]" {
+		t.Fatalf("yerinden edilen bağlantı kendi edge'inde kesilmeli: uzak=%s yerel=%s", remoteSRS.got(), f.ts.got())
 	}
 }

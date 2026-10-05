@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"streamhub/internal/balancer"
 	"streamhub/internal/config"
+	"streamhub/internal/hooks"
 	"streamhub/internal/session"
 	"streamhub/internal/session/sessiontest"
 	"streamhub/internal/testdb"
@@ -49,8 +51,18 @@ func TestPublicRoutesDoNotShadowEachOther(t *testing.T) {
 	upstream, _ := url.Parse("http://127.0.0.1:1")
 	public, _ := url.Parse(cfg.PublicBaseURL)
 	srs := &sessiontest.FakeSRS{}
-	sessions := session.New(st, srs, srs, 30*time.Second, time.Hour)
-	mux := publicMux(st, token.NewSigner([]byte(strings.Repeat("k", 32))), sessions, cfg, public, upstream)
+	sessions := session.New(st, sessiontest.For(srs), srs, 30*time.Second, time.Hour)
+	signer := token.NewSigner([]byte(strings.Repeat("k", 32)))
+	localEdge, err := st.SyncLocalEdge(ctx, cfg.EdgeTSBaseURL, cfg.EdgeHLSBaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkEdgeSeen(ctx, localEdge); err != nil {
+		t.Fatal(err)
+	}
+	edges := balancer.New(st, 15*time.Second, 0)
+	hook := hooks.New(st, signer, sessions, edges, time.Now)
+	mux := publicMux(st, signer, sessions, edges, hook, localEdge, cfg, public, upstream)
 
 	get := func(path string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
@@ -69,6 +81,17 @@ func TestPublicRoutesDoNotShadowEachOther(t *testing.T) {
 	}
 	if rec := get("/hooks/srs/hook-secret-0123456789/publish"); rec.Code != http.StatusNotFound {
 		t.Errorf("SRS sorgu ucu izleyici yönlendiricisinde olmamalı: durum %d", rec.Code)
+	}
+	// Uzak edge'lerin uçları anahtarsız kullanılamaz ve izleyici yollarıyla karışmaz.
+	for _, path := range []string{"/edge/hls/sahte-imza/1.m3u8", "/edge/segment/1.m3u8"} {
+		if rec := get(path); rec.Code != http.StatusForbidden {
+			t.Errorf("%s: anahtarsız istek durum %d", path, rec.Code)
+		}
+	}
+	post := httptest.NewRecorder()
+	mux.ServeHTTP(post, httptest.NewRequest(http.MethodPost, "/edge/sahte-anahtar/hooks/play", strings.NewReader("{}")))
+	if post.Code != http.StatusNotFound {
+		t.Errorf("geçersiz edge anahtarıyla izleme sorgusu: durum %d", post.Code)
 	}
 	if rec := get("/a/b/c"); rec.Code != http.StatusNotFound {
 		t.Errorf("kanal numarası olmayan yol 404 olmalı: durum %d", rec.Code)

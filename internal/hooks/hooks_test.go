@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"streamhub/internal/balancer"
 	"streamhub/internal/hooks"
 	"streamhub/internal/session"
 	"streamhub/internal/session/sessiontest"
@@ -30,6 +31,7 @@ type fixture struct {
 	tenant  int64
 	channel int64
 	viewer  int64
+	local   int64
 }
 
 func must[T any](v T, err error) T {
@@ -46,8 +48,11 @@ func setup(t *testing.T) *fixture {
 	f.channel = must(f.store.CreateChannel(ctx, f.tenant, "c", "sek"))
 	f.viewer = must(f.store.CreateViewer(ctx, f.tenant, "ali", "pw", 1))
 	f.srs = &sessiontest.FakeSRS{}
-	sessions := session.New(f.store, f.srs, f.srs, 30*time.Second, 6*time.Hour)
-	hooks.New(f.store, f.signer, sessions, func() time.Time { return now }).Register(f.mux, hookSecret)
+	sessions := session.New(f.store, sessiontest.For(f.srs), f.srs, 30*time.Second, 6*time.Hour)
+	f.local = testdb.LocalEdge(t)
+	h := hooks.New(f.store, f.signer, sessions, balancer.New(f.store, 15*time.Second, 0), func() time.Time { return now })
+	h.Register(f.mux, hookSecret, f.local)
+	h.RegisterEdge(f.mux)
 	return f
 }
 
@@ -354,7 +359,7 @@ func TestPlayRejectedWhenTenantConnectionQuotaIsFull(t *testing.T) {
 }
 
 // Origin'e RTMP ile bağlanıp izlemek bir izleyici yolu değildir; geçerli imzayla bile reddedilir.
-func TestOriginPlayIsAlwaysRejected(t *testing.T) {
+func TestOriginPlayIsRejectedForViewers(t *testing.T) {
 	f := setup(t)
 	f.publish("a", "?secret=sek")
 	body := event("p1", "live", fmt.Sprint(f.channel), f.tokenFor(f.viewer, f.channel, now.Add(time.Minute)))

@@ -29,10 +29,11 @@ const (
 )
 
 // Evicted, yeni bir oturuma yer açmak için sonlandırılan oturumdur.
-// Kind "ts" ise Key, SRS'te kesilmesi gereken bağlantının kimliğidir.
+// Kind "ts" ise Key, EdgeID numaralı edge'in SRS'inde kesilmesi gereken bağlantının kimliğidir.
 type Evicted struct {
-	Kind string
-	Key  string
+	Kind   string
+	Key    string
+	EdgeID int64
 }
 
 // activeSession, bir oturumun bağlantı limitinde sayılıp sayılmadığını belirleyen koşuldur:
@@ -42,8 +43,9 @@ const activeSession = `NOT revoked AND (kind = 'ts' OR last_seen_at > now() - ma
 
 // TouchHLSSession, bir HLS isteğini oturumuna işler: süren oturumun son görülme zamanını
 // günceller; oturum yoksa, boşta kalmışsa veya başka bir ağa taşınıyorsa bağlantı limitini
-// uygulayarak kabul eder. Oturumun kimliği anahtarıdır; ip, o an kullanıldığı ağdır.
-func (s *Store) TouchHLSSession(ctx context.Context, viewerID, channelID int64, key, ip string, idle time.Duration) ([]Evicted, error) {
+// uygulayarak kabul eder. Oturumun kimliği anahtarıdır; ip, o an kullanıldığı ağdır; edgeID,
+// isteğin geldiği edge'dir.
+func (s *Store) TouchHLSSession(ctx context.Context, edgeID, viewerID, channelID int64, key, ip string, idle time.Duration) ([]Evicted, error) {
 	// Sık yol: kilit almadan tek okuma. Sonlandırılmış bir adresin yeniden denemeleri de burada
 	// reddedilir, böylece yayıncı satırının kilidini meşgul etmez.
 	var dead, sameIP, active, fresh, movable bool
@@ -70,17 +72,18 @@ func (s *Store) TouchHLSSession(ctx context.Context, viewerID, channelID int64, 
 	case !sameIP && !movable:
 		return nil, ErrSessionMoved
 	}
-	return s.admit(ctx, "hls", viewerID, channelID, key, ip, idle)
+	return s.admit(ctx, "hls", edgeID, viewerID, channelID, key, ip, idle)
 }
 
-// OpenTSSession, SRS'in bildirdiği yeni bir .ts izlemesini bağlantı limitini uygulayarak kaydeder.
-func (s *Store) OpenTSSession(ctx context.Context, viewerID, channelID int64, clientID, ip string, idle time.Duration) ([]Evicted, error) {
-	return s.admit(ctx, "ts", viewerID, channelID, clientID, ip, idle)
+// OpenTSSession, bir edge'in SRS'inin bildirdiği yeni .ts izlemesini bağlantı limitini uygulayarak
+// kaydeder. clientID yalnızca o edge'de tekildir.
+func (s *Store) OpenTSSession(ctx context.Context, edgeID, viewerID, channelID int64, clientID, ip string, idle time.Duration) ([]Evicted, error) {
+	return s.admit(ctx, "ts", edgeID, viewerID, channelID, clientID, ip, idle)
 }
 
 // admit, bir oturumu kabul eder. İzleyici limitine ulaşılmışsa en eski oturumları sonlandırır
 // (kanal değiştiren izleyici takılmasın diye); yayıncı kotası doluysa reddeder.
-func (s *Store) admit(ctx context.Context, kind string, viewerID, channelID int64, key, ip string, idle time.Duration) ([]Evicted, error) {
+func (s *Store) admit(ctx context.Context, kind string, edgeID, viewerID, channelID int64, key, ip string, idle time.Duration) ([]Evicted, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -105,8 +108,8 @@ func (s *Store) admit(ctx context.Context, kind string, viewerID, channelID int6
 	var rowIP string
 	err = tx.QueryRow(ctx, `
 		SELECT id, viewer_id, revoked, ip, (ip_changed_at IS NULL OR ip_changed_at <= now() - make_interval(secs => $3))
-		FROM sessions WHERE kind = $1 AND session_key = $2`,
-		kind, key, hlsMoveCooldown.Seconds()).Scan(&rowID, &owner, &revoked, &rowIP, &movable)
+		FROM sessions WHERE kind = $1 AND session_key = $2 AND (kind = 'hls' OR edge_id = $4)`,
+		kind, key, hlsMoveCooldown.Seconds(), edgeID).Scan(&rowID, &owner, &revoked, &rowIP, &movable)
 	exists := err == nil
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
@@ -119,7 +122,7 @@ func (s *Store) admit(ctx context.Context, kind string, viewerID, channelID int6
 	}
 
 	rows, err := tx.Query(ctx, `
-		SELECT id, kind, session_key FROM sessions
+		SELECT id, kind, session_key, edge_id FROM sessions
 		WHERE viewer_id = $2 AND id <> $3 AND `+activeSession+`
 		ORDER BY started_at, id`, idle.Seconds(), viewerID, rowID)
 	if err != nil {
@@ -131,7 +134,7 @@ func (s *Store) admit(ctx context.Context, kind string, viewerID, channelID int6
 	}
 	others, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (active, error) {
 		var a active
-		err := row.Scan(&a.id, &a.Kind, &a.Key)
+		err := row.Scan(&a.id, &a.Kind, &a.Key, &a.EdgeID)
 		return a, err
 	})
 	if err != nil {
@@ -159,14 +162,14 @@ func (s *Store) admit(ctx context.Context, kind string, viewerID, channelID int6
 	if exists {
 		_, err = tx.Exec(ctx, `
 			UPDATE sessions
-			SET channel_id = $2, started_at = now(), last_seen_at = now(),
+			SET channel_id = $2, edge_id = $4, started_at = now(), last_seen_at = now(),
 			    ip_changed_at = CASE WHEN ip <> $3 THEN now() ELSE ip_changed_at END,
 			    ip = $3
-			WHERE id = $1`, rowID, channelID, ip)
+			WHERE id = $1`, rowID, channelID, ip, edgeID)
 	} else {
 		_, err = tx.Exec(ctx, `
-			INSERT INTO sessions (tenant_id, viewer_id, channel_id, kind, session_key, ip)
-			VALUES ($1, $2, $3, $4, $5, $6)`, tenantID, viewerID, channelID, kind, key, ip)
+			INSERT INTO sessions (tenant_id, viewer_id, channel_id, edge_id, kind, session_key, ip)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)`, tenantID, viewerID, channelID, edgeID, kind, key, ip)
 	}
 	if err != nil {
 		return nil, err
@@ -174,9 +177,9 @@ func (s *Store) admit(ctx context.Context, kind string, viewerID, channelID int6
 	return evicted, tx.Commit(ctx)
 }
 
-// CloseTSSession, SRS "izleme bitti" dediğinde .ts oturumunu siler.
-func (s *Store) CloseTSSession(ctx context.Context, clientID string) error {
-	_, err := s.pool.Exec(ctx, `DELETE FROM sessions WHERE kind = 'ts' AND session_key = $1`, clientID)
+// CloseTSSession, edge'in SRS'i "izleme bitti" dediğinde .ts oturumunu siler.
+func (s *Store) CloseTSSession(ctx context.Context, edgeID int64, clientID string) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM sessions WHERE kind = 'ts' AND edge_id = $1 AND session_key = $2`, edgeID, clientID)
 	return err
 }
 
@@ -188,31 +191,32 @@ func (s *Store) ActiveSessionCount(ctx context.Context, viewerID int64, idle tim
 	return n, err
 }
 
-// TSSessionsToKick, SRS'te kesilmesi gereken .ts bağlantılarının kimliklerini döner: yerinden
-// edilmiş oturumlar ve artık izleme hakkı olmayan (askıda, süresi dolmuş) izleyicilerin oturumları.
-func (s *Store) TSSessionsToKick(ctx context.Context) ([]string, error) {
+// TSSessionsToKick, bir edge'in SRS'inde kesilmesi gereken .ts bağlantılarının kimliklerini döner:
+// yerinden edilmiş oturumlar ve artık izleme hakkı olmayan (askıda, süresi dolmuş) izleyicilerin oturumları.
+func (s *Store) TSSessionsToKick(ctx context.Context, edgeID int64) ([]string, error) {
 	return s.strings(ctx, `
 		SELECT x.session_key
 		FROM sessions x
 		JOIN viewers v ON v.id = x.viewer_id
 		JOIN tenants t ON t.id = x.tenant_id
-		WHERE x.kind = 'ts'
+		WHERE x.kind = 'ts' AND x.edge_id = $1
 		  AND (x.revoked OR v.status <> 'active' OR t.status <> 'active'
 		       OR (v.expires_at IS NOT NULL AND v.expires_at <= now()))
-		ORDER BY x.session_key`)
+		ORDER BY x.session_key`, edgeID)
 }
 
-// ReconcileTSSessions, SRS'in bağlantı listesinde olmayan .ts oturumlarını siler (SRS çökerse
-// "izleme bitti" bildirimi gelmez). grace süresinden yeni oturumlara dokunmaz.
-func (s *Store) ReconcileTSSessions(ctx context.Context, activeClientIDs []string, grace time.Duration) (int64, error) {
+// ReconcileTSSessions, bir edge'in SRS bağlantı listesinde olmayan .ts oturumlarını siler (SRS
+// çökerse "izleme bitti" bildirimi gelmez). grace süresinden yeni oturumlara ve başka edge'lerin
+// oturumlarına dokunmaz.
+func (s *Store) ReconcileTSSessions(ctx context.Context, edgeID int64, activeClientIDs []string, grace time.Duration) (int64, error) {
 	if activeClientIDs == nil {
 		activeClientIDs = []string{}
 	}
 	tag, err := s.pool.Exec(ctx, `
 		DELETE FROM sessions
-		WHERE kind = 'ts'
+		WHERE kind = 'ts' AND edge_id = $3
 		  AND started_at <= now() - make_interval(secs => $2)
-		  AND NOT (session_key = ANY($1))`, activeClientIDs, grace.Seconds())
+		  AND NOT (session_key = ANY($1))`, activeClientIDs, grace.Seconds(), edgeID)
 	return tag.RowsAffected(), err
 }
 

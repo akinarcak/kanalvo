@@ -5,7 +5,15 @@ import (
 	"context"
 	"fmt"
 	"sync"
+
+	"streamhub/internal/session"
+	"streamhub/internal/store"
 )
+
+// For, her edge için aynı sahte SRS'i veren bir session.New argümanı döner.
+func For(srs session.SRS) func(store.Edge) session.SRS {
+	return func(store.Edge) session.SRS { return srs }
+}
 
 // FakeSRS, session.SRS arayüzünü uygular: bağlantı listesini taklit eder ve kesme isteklerini kaydeder.
 type FakeSRS struct {

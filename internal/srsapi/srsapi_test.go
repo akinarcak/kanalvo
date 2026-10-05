@@ -91,3 +91,24 @@ func TestKickErrors(t *testing.T) {
 		t.Error("SRS hata kodu için hata bekleniyordu")
 	}
 }
+
+// Uzak edge'in yönetim yolu bir anahtarla korunur; istemci anahtarı her istekte gönderir.
+func TestRequestsCarryTheConfiguredHeader(t *testing.T) {
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Method+" "+r.URL.Path+" "+r.Header.Get("X-Edge-Key"))
+		io.WriteString(w, `{"code":0,"clients":[]}`)
+	}))
+	t.Cleanup(srv.Close)
+	c := srsapi.NewWithHeader(srv.URL+"/_srs", "X-Edge-Key", "anahtar")
+	if _, err := c.ClientIDs(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Kick(context.Background(), "abc123"); err != nil {
+		t.Fatal(err)
+	}
+	want := "[GET /_srs/api/v1/clients/ anahtar DELETE /_srs/api/v1/clients/abc123 anahtar]"
+	if fmt.Sprint(seen) != want {
+		t.Fatalf("istekler: %v", seen)
+	}
+}

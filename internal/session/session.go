@@ -1,11 +1,14 @@
 // Package session, izleyici oturumlarını yönetir: bağlantı limitini uygular, yerinden edilen
-// veya izleme hakkını yitiren bağlantıları SRS'te keser ve kayıtları SRS'le eşitler.
+// veya izleme hakkını yitiren bağlantıları edge'lerin SRS'inde keser, kayıtları SRS'le eşitler
+// ve edge'lerin sağlık sinyalini kaydeder.
 package session
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"streamhub/internal/srsapi"
@@ -34,8 +37,9 @@ type SRS interface {
 }
 
 type Manager struct {
-	store     *store.Store
-	ts        SRS // izleyicilerin bağlandığı .ts dağıtıcısı
+	store *store.Store
+	// srsFor, bir edge'in izleyicilerinin bağlandığı SRS'in yönetim API'sini verir.
+	srsFor    func(store.Edge) SRS
 	origin    SRS // yayıncıların bağlandığı origin
 	idle      time.Duration
 	retention time.Duration
@@ -43,13 +47,13 @@ type Manager struct {
 
 // New: idle, istek gelmeyen bir HLS oturumunun bağlantı limitinden düşmesi için geçen süredir.
 // retention, HLS oturum kayıtlarının saklanma süresidir ve HLS imzasının ömründen kısa olmamalıdır.
-func New(s *store.Store, ts, origin SRS, idle, retention time.Duration) *Manager {
-	return &Manager{store: s, ts: ts, origin: origin, idle: idle, retention: retention}
+func New(s *store.Store, srsFor func(store.Edge) SRS, origin SRS, idle, retention time.Duration) *Manager {
+	return &Manager{store: s, srsFor: srsFor, origin: origin, idle: idle, retention: retention}
 }
 
-// OpenTS, SRS'in bildirdiği yeni bir .ts izlemesini kaydeder.
-func (m *Manager) OpenTS(ctx context.Context, viewerID, channelID int64, clientID, ip string) error {
-	evicted, err := m.store.OpenTSSession(ctx, viewerID, channelID, clientID, ip, m.idle)
+// OpenTS, bir edge'in SRS'inin bildirdiği yeni .ts izlemesini kaydeder.
+func (m *Manager) OpenTS(ctx context.Context, edgeID, viewerID, channelID int64, clientID, ip string) error {
+	evicted, err := m.store.OpenTSSession(ctx, edgeID, viewerID, channelID, clientID, ip, m.idle)
 	if err != nil {
 		return err
 	}
@@ -57,9 +61,9 @@ func (m *Manager) OpenTS(ctx context.Context, viewerID, channelID int64, clientI
 	return nil
 }
 
-// TouchHLS, bir HLS isteğini oturumuna işler; gerekiyorsa oturumu açar.
-func (m *Manager) TouchHLS(ctx context.Context, viewerID, channelID int64, key, ip string) error {
-	evicted, err := m.store.TouchHLSSession(ctx, viewerID, channelID, key, ip, m.idle)
+// TouchHLS, bir edge'e gelen HLS isteğini oturumuna işler; gerekiyorsa oturumu açar.
+func (m *Manager) TouchHLS(ctx context.Context, edgeID, viewerID, channelID int64, key, ip string) error {
+	evicted, err := m.store.TouchHLSSession(ctx, edgeID, viewerID, channelID, key, ip, m.idle)
 	if err != nil {
 		return err
 	}
@@ -67,8 +71,8 @@ func (m *Manager) TouchHLS(ctx context.Context, viewerID, channelID int64, key, 
 	return nil
 }
 
-func (m *Manager) CloseTS(ctx context.Context, clientID string) error {
-	return m.store.CloseTSSession(ctx, clientID)
+func (m *Manager) CloseTS(ctx context.Context, edgeID int64, clientID string) error {
+	return m.store.CloseTSSession(ctx, edgeID, clientID)
 }
 
 // ActiveCount, izleyicinin bağlantı limitinde sayılan oturumlarının sayısıdır.
@@ -82,7 +86,11 @@ func (m *Manager) kickEvicted(ctx context.Context, evicted []store.Evicted) {
 			continue // sonlandırılmış HLS oturumunu geçit bir sonraki istekte reddeder
 		}
 		kickCtx, cancel := context.WithTimeout(ctx, kickTimeout)
-		if err := m.ts.Kick(kickCtx, e.Key); err != nil {
+		edge, err := m.store.EdgeByID(kickCtx, e.EdgeID, 0)
+		if err == nil {
+			err = m.srsFor(edge).Kick(kickCtx, e.Key)
+		}
+		if err != nil {
 			log.Printf("session: yerinden edilen bağlantı kesilemedi, sonra yeniden denenecek: %v", err)
 		}
 		cancel()
@@ -95,18 +103,31 @@ func (m *Manager) kickEvicted(ctx context.Context, evicted []store.Evicted) {
 func (m *Manager) Flush(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), flushTimeout)
 	defer cancel()
-	if err := m.kickPass(ctx); err != nil {
+	if err := m.pass(ctx, false); err != nil {
 		log.Printf("session: bekleyen bağlantılar kesilemedi, yeniden denenecek: %v", err)
 	}
 }
 
-// Run, EnforceOnce'ı bağlam iptal edilene kadar düzenli olarak çalıştırır.
+// Run, EnforceOnce'ı bağlam iptal edilene kadar düzenli olarak çalıştırır. Süren bir arıza
+// (ör. ulaşılamayan bir edge) her geçişte değil, yalnızca başladığında ve bittiğinde loga yazılır.
 func (m *Manager) Run(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	last := ""
 	for {
-		if err := m.EnforceOnce(ctx); err != nil && ctx.Err() == nil {
-			log.Printf("session: %v", err)
+		err := m.EnforceOnce(ctx)
+		if ctx.Err() == nil {
+			current := ""
+			if err != nil {
+				current = err.Error()
+			}
+			switch {
+			case current != "" && current != last:
+				log.Printf("session: %v", err)
+			case current == "" && last != "":
+				log.Printf("session: denetim yeniden sorunsuz çalışıyor")
+			}
+			last = current
 		}
 		select {
 		case <-ctx.Done():
@@ -116,45 +137,63 @@ func (m *Manager) Run(ctx context.Context, interval time.Duration) {
 	}
 }
 
-// EnforceOnce:
+// EnforceOnce, origin ve her edge için:
 //  1. kesilmeyi bekleyen bağlantıları (silinen kanal ve izleyiciler, yenilenen yayın anahtarları),
 //     yerinden edilmiş veya izleme hakkını yitirmiş .ts bağlantılarını ve askıdaki yayıncıların
 //     süren yayınlarını keser,
-//  2. SRS'te artık olmayan .ts oturumlarını siler,
-//  3. saklama süresi dolan HLS oturum kayıtlarını ve eskimiş kesme kayıtlarını siler.
+//  2. edge'in SRS'inde artık olmayan .ts oturumlarını siler ve yanıt veren edge'in sağlık
+//     sinyalini kaydeder,
 //
+// ardından saklama süresi dolan HLS oturum kayıtlarını ve eskimiş kesme kayıtlarını siler.
 // Geçişin tamamı passTimeout ile sınırlıdır.
 func (m *Manager) EnforceOnce(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, passTimeout)
 	defer cancel()
-	return errors.Join(m.kickPass(ctx), m.reconcile(ctx), m.expire(ctx))
+	return errors.Join(m.pass(ctx, true), m.expire(ctx))
 }
 
-// kickPass, iki SRS'teki kesmeleri birbirinden bağımsız yürütür: biri yanıt vermese de diğerinin
-// işi gecikmez.
-func (m *Manager) kickPass(ctx context.Context) error {
-	var originErr error
-	originDone := make(chan struct{})
+// pass, origin'i ve her edge'i birbirinden bağımsız denetler: biri yanıt vermese de diğerlerinin
+// işi gecikmez. reconcile kapalıysa yalnızca kesmeler yapılır.
+func (m *Manager) pass(ctx context.Context, reconcile bool) error {
+	edges, listErr := m.store.Edges(ctx, 0)
+	errs := make([]error, len(edges)+2)
+	errs[len(edges)+1] = listErr
+
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
-		defer close(originDone)
-		originErr = errors.Join(
-			m.kickPending(ctx, m.origin, "origin"),
+		defer wg.Done()
+		errs[len(edges)] = errors.Join(
+			m.kickAll(ctx, m.origin, m.store.PendingOriginKicks, func(id string) error { return m.store.ResolveOriginKick(ctx, id) }),
 			m.kickAll(ctx, m.origin, m.store.SuspendedLivePublishers, nil),
 		)
 	}()
-	tsErr := errors.Join(
-		m.kickPending(ctx, m.ts, "ts"),
-		m.kickAll(ctx, m.ts, m.store.TSSessionsToKick, nil),
-	)
-	<-originDone
-	return errors.Join(tsErr, originErr)
+	for i, e := range edges {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := m.enforceEdge(ctx, e, reconcile); err != nil {
+				errs[i] = fmt.Errorf("edge %q: %w", e.Name, err)
+			}
+		}()
+	}
+	wg.Wait()
+	return errors.Join(errs...)
 }
 
-// kickPending, kuyruktaki bağlantıları keser ve kesilenleri (ya da SRS'te artık olmayanları) kuyruktan çıkarır.
-func (m *Manager) kickPending(ctx context.Context, srs SRS, target string) error {
-	list := func(ctx context.Context) ([]string, error) { return m.store.PendingKicks(ctx, target) }
-	done := func(id string) error { return m.store.ResolveKick(ctx, target, id) }
-	return m.kickAll(ctx, srs, list, done)
+func (m *Manager) enforceEdge(ctx context.Context, e store.Edge, reconcile bool) error {
+	srs := m.srsFor(e)
+	pending := func(ctx context.Context) ([]string, error) { return m.store.PendingEdgeKicks(ctx, e.ID) }
+	resolve := func(id string) error { return m.store.ResolveEdgeKick(ctx, e.ID, id) }
+	unentitled := func(ctx context.Context) ([]string, error) { return m.store.TSSessionsToKick(ctx, e.ID) }
+	err := errors.Join(
+		m.kickAll(ctx, srs, pending, resolve),
+		m.kickAll(ctx, srs, unentitled, nil),
+	)
+	if !reconcile {
+		return err
+	}
+	return errors.Join(err, m.reconcile(ctx, e, srs))
 }
 
 // kickAll, listedeki bağlantıları keser. SRS'in reddettiği bir kesme (bağlantı zaten kopmuş)
@@ -185,13 +224,17 @@ func (m *Manager) kickAll(ctx context.Context, srs SRS, list func(context.Contex
 	return errors.Join(errs...)
 }
 
-// reconcile, SRS'e ulaşılamazsa hiçbir oturuma dokunmadan hata döner.
-func (m *Manager) reconcile(ctx context.Context) error {
-	ids, err := m.ts.ClientIDs(ctx)
+// reconcile, edge'in SRS'ine ulaşılamazsa hiçbir oturuma dokunmadan hata döner. Bağlantı listesinin
+// alınabilmesi edge'in sağlık sinyalidir.
+func (m *Manager) reconcile(ctx context.Context, e store.Edge, srs SRS) error {
+	ids, err := srs.ClientIDs(ctx)
 	if err != nil {
 		return err
 	}
-	_, err = m.store.ReconcileTSSessions(ctx, ids, reconcileGrace)
+	if err := m.store.MarkEdgeSeen(ctx, e.ID); err != nil {
+		return err
+	}
+	_, err = m.store.ReconcileTSSessions(ctx, e.ID, ids, reconcileGrace)
 	return err
 }
 

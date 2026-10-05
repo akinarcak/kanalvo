@@ -56,8 +56,8 @@ func (s *Store) DeleteChannel(ctx context.Context, tenantID, id int64) error {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO pending_kicks (target, client_id)
-			SELECT 'ts', session_key FROM sessions WHERE kind = 'ts' AND channel_id = $1
+			INSERT INTO pending_kicks (target, edge_id, client_id)
+			SELECT 'ts', edge_id, session_key FROM sessions WHERE kind = 'ts' AND channel_id = $1
 			ON CONFLICT DO NOTHING`, id); err != nil {
 			return err
 		}
@@ -145,8 +145,8 @@ func (s *Store) DeleteViewer(ctx context.Context, tenantID, id int64) error {
 			return notFound(err)
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO pending_kicks (target, client_id)
-			SELECT 'ts', session_key FROM sessions WHERE kind = 'ts' AND viewer_id = $1
+			INSERT INTO pending_kicks (target, edge_id, client_id)
+			SELECT 'ts', edge_id, session_key FROM sessions WHERE kind = 'ts' AND viewer_id = $1
 			ON CONFLICT DO NOTHING`, id); err != nil {
 			return err
 		}
@@ -163,14 +163,16 @@ type SessionInfo struct {
 	Kind      string
 	IP        string
 	StartedAt time.Time
+	Edge      string
 }
 
 func (s *Store) ActiveSessionsByTenant(ctx context.Context, tenantID int64, idle time.Duration) ([]SessionInfo, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT x.id, v.username, c.name, x.kind, x.ip, x.started_at
+		SELECT x.id, v.username, c.name, x.kind, x.ip, x.started_at, e.name
 		FROM sessions x
 		JOIN viewers v ON v.id = x.viewer_id
 		JOIN channels c ON c.id = x.channel_id
+		JOIN edges e ON e.id = x.edge_id
 		WHERE x.tenant_id = $2 AND NOT x.revoked
 		  AND (x.kind = 'ts' OR x.last_seen_at > now() - make_interval(secs => $1))
 		ORDER BY x.started_at, x.id`, idle.Seconds(), tenantID)
@@ -182,14 +184,25 @@ func (s *Store) ActiveSessionsByTenant(ctx context.Context, tenantID int64, idle
 
 // --- kesilmeyi bekleyen bağlantılar ---
 
-// PendingKicks, verilen SRS'te ("origin" veya "ts") kesilmeyi bekleyen bağlantı kimliklerini döner.
-func (s *Store) PendingKicks(ctx context.Context, target string) ([]string, error) {
-	return s.strings(ctx, `SELECT client_id FROM pending_kicks WHERE target = $1 ORDER BY client_id`, target)
+// PendingOriginKicks, origin'de kesilmeyi bekleyen yayıncı bağlantılarının kimliklerini döner.
+func (s *Store) PendingOriginKicks(ctx context.Context) ([]string, error) {
+	return s.strings(ctx, `SELECT client_id FROM pending_kicks WHERE target = 'origin' ORDER BY client_id`)
 }
 
-// ResolveKick, kesilen (veya SRS'te artık bulunmayan) bağlantıyı kuyruktan çıkarır.
-func (s *Store) ResolveKick(ctx context.Context, target, clientID string) error {
-	_, err := s.pool.Exec(ctx, `DELETE FROM pending_kicks WHERE target = $1 AND client_id = $2`, target, clientID)
+// PendingEdgeKicks, bir edge'in SRS'inde kesilmeyi bekleyen izleyici bağlantılarının kimliklerini döner.
+func (s *Store) PendingEdgeKicks(ctx context.Context, edgeID int64) ([]string, error) {
+	return s.strings(ctx, `SELECT client_id FROM pending_kicks WHERE target = 'ts' AND edge_id = $1 ORDER BY client_id`, edgeID)
+}
+
+// ResolveOriginKick, kesilen (veya origin'de artık bulunmayan) yayıncı bağlantısını kuyruktan çıkarır.
+func (s *Store) ResolveOriginKick(ctx context.Context, clientID string) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM pending_kicks WHERE target = 'origin' AND client_id = $1`, clientID)
+	return err
+}
+
+// ResolveEdgeKick, kesilen (veya edge'de artık bulunmayan) izleyici bağlantısını kuyruktan çıkarır.
+func (s *Store) ResolveEdgeKick(ctx context.Context, edgeID int64, clientID string) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM pending_kicks WHERE target = 'ts' AND edge_id = $1 AND client_id = $2`, edgeID, clientID)
 	return err
 }
 

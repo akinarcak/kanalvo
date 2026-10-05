@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"streamhub/internal/auth"
+	"streamhub/internal/balancer"
 	"streamhub/internal/config"
 	"streamhub/internal/hlsgw"
 	"streamhub/internal/hooks"
@@ -44,6 +45,11 @@ const (
 	// hlsSessionIdle: bu süre boyunca istek gelmeyen HLS oturumu bağlantı limitinden düşer.
 	hlsSessionIdle  = 30 * time.Second
 	enforceInterval = 5 * time.Second
+	// edgeHealthWindow: bu süre içinde yönetim API'si yanıt vermiş edge sağlıklı sayılır. Her edge
+	// enforceInterval aralığıyla sorulduğu için iki ardışık sorgunun kaçması edge'i yönlendirmeden çıkarır.
+	edgeHealthWindow = 3 * enforceInterval
+	// edgeListTTL: edge listesinin bellekte tutulduğu süre.
+	edgeListTTL = 2 * time.Second
 )
 
 func main() {
@@ -85,11 +91,27 @@ func serve(ctx context.Context) error {
 
 	signer := token.NewSigner(cfg.TokenKey)
 
-	// SRS yetki sorguları ayrı, dışarıya açılmayan bir adreste dinlenir.
-	sessions := session.New(st, srsapi.New(cfg.SRSTSAPIURL), srsapi.New(cfg.SRSAPIURL), hlsSessionIdle, cfg.HLSTokenTTL)
+	// Kontrol sunucusundaki dağıtım "yerel" edge'dir; adresleri ayarlardan gelir.
+	localEdge, err := st.SyncLocalEdge(ctx, cfg.EdgeTSBaseURL, cfg.EdgeHLSBaseURL)
+	if err != nil {
+		return fmt.Errorf("yerel edge kaydı: %w", err)
+	}
+	edges := balancer.New(st, edgeHealthWindow, edgeListTTL)
+	localSRS := srsapi.New(cfg.SRSTSAPIURL)
+	srsFor := func(e store.Edge) session.SRS {
+		if e.Builtin {
+			return localSRS
+		}
+		// Uzak edge'in SRS yönetim API'si, nginx'inde anahtarla korunan /_srs yolundadır.
+		return srsapi.NewWithHeader(e.ControlURL+"/_srs", balancer.KeyHeader, e.Key)
+	}
+	sessions := session.New(st, srsFor, srsapi.New(cfg.SRSAPIURL), hlsSessionIdle, cfg.HLSTokenTTL)
+
+	// Kontrol sunucusundaki SRS'lerin yetki sorguları ayrı, dışarıya açılmayan bir adreste dinlenir.
+	hook := hooks.New(st, signer, sessions, edges, time.Now)
 	internal := http.NewServeMux()
-	hooks.New(st, signer, sessions, time.Now).Register(internal, cfg.HookSecret)
-	mux := publicMux(st, signer, sessions, cfg, publicBase, srsHLS)
+	hook.Register(internal, cfg.HookSecret, localEdge)
+	mux := publicMux(st, signer, sessions, edges, hook, localEdge, cfg, publicBase, srsHLS)
 
 	// Panel ayrı bir adreste dinlenir ve kendi hatalı giriş sayacını kullanır.
 	panel := http.NewServeMux()
@@ -100,6 +122,7 @@ func serve(ctx context.Context) error {
 		IngestURL:         cfg.IngestBaseURL,
 		PublicBaseURL:     cfg.PublicBaseURL,
 		Idle:              hlsSessionIdle,
+		EdgeHealthWindow:  edgeHealthWindow,
 	}).Register(panel)
 	panel.Handle("/", panelui.New(panelui.Embedded()))
 
@@ -113,21 +136,21 @@ func serve(ctx context.Context) error {
 		httpserve.New(cfg.HTTPAddr, mux), httpserve.New(cfg.HooksAddr, internal), httpserve.New(cfg.PanelAddr, panel))
 }
 
-// publicMux, izleyicilere açık tüm uçları tek yönlendiricide toplar.
-func publicMux(st *store.Store, signer *token.Signer, sessions *session.Manager, cfg config.Config, publicBase, srsHLS *url.URL) *http.ServeMux {
+// publicMux, izleyicilere açık tüm uçları ve uzak edge'lerin kullandığı /edge uçlarını tek
+// yönlendiricide toplar.
+func publicMux(st *store.Store, signer *token.Signer, sessions *session.Manager, edges *balancer.Balancer, hook *hooks.Handler,
+	localEdge int64, cfg config.Config, publicBase, srsHLS *url.URL) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok") })
 
 	limiter := ratelimit.New(cfg.LoginMaxFailures, cfg.LoginFailureWindow, time.Now)
 	authn := auth.New(st, limiter, cfg.TrustProxyHeaders)
 	xtream.New(st, authn, sessions, publicBase, time.Now).Register(mux)
-	play.New(st, authn, signer, play.Options{
-		TSBaseURL:   cfg.EdgeTSBaseURL,
-		TSTokenTTL:  cfg.TokenTTL,
-		HLSBaseURL:  cfg.EdgeHLSBaseURL,
-		HLSTokenTTL: cfg.HLSTokenTTL,
-	}, time.Now).Register(mux)
-	hlsgw.New(st, signer, sessions, srsHLS, srsResponseTimeout, cfg.TrustProxyHeaders, time.Now).Register(mux)
+	play.New(st, authn, signer, edges, play.Options{TSTokenTTL: cfg.TokenTTL, HLSTokenTTL: cfg.HLSTokenTTL}, time.Now).Register(mux)
+	gateway := hlsgw.New(st, signer, sessions, edges, localEdge, srsHLS, srsResponseTimeout, cfg.TrustProxyHeaders, time.Now)
+	gateway.Register(mux)
+	gateway.RegisterEdge(mux)
+	hook.RegisterEdge(mux)
 	return mux
 }
 

@@ -28,11 +28,20 @@ func (e *StatusError) Error() string { return fmt.Sprintf("srsapi: %s: kod %d", 
 type Client struct {
 	base string
 	http *http.Client
+	// header, verilmişse her isteğe eklenir (uzak edge'in yönetim yolunu koruyan anahtar).
+	headerName, headerValue string
 }
 
 // New: baseURL, SRS'in API adresidir (ör. http://srs-ts:1985).
 func New(baseURL string) *Client {
 	return &Client{base: baseURL, http: &http.Client{Timeout: 5 * time.Second}}
+}
+
+// NewWithHeader, her isteğe verilen başlığı ekleyen bir istemci döner.
+func NewWithHeader(baseURL, name, value string) *Client {
+	c := New(baseURL)
+	c.headerName, c.headerValue = name, value
+	return c
 }
 
 // ClientIDs, SRS'e bağlı tüm istemcilerin (izleyici ve yayıncı) kimliklerini döner.
@@ -69,6 +78,9 @@ func (c *Client) do(ctx context.Context, method, path string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, nil)
 	if err != nil {
 		return err
+	}
+	if c.headerName != "" {
+		req.Header.Set(c.headerName, c.headerValue)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {

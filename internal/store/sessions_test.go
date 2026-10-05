@@ -34,11 +34,11 @@ func newSessionFixture(t *testing.T, maxConn int) *sessionFixture {
 }
 
 func (f *sessionFixture) hls(key, ip string) ([]store.Evicted, error) {
-	return f.s.TouchHLSSession(context.Background(), f.viewer, f.channel, key, ip, idle)
+	return f.s.TouchHLSSession(context.Background(), testdb.LocalEdge(f.t), f.viewer, f.channel, key, ip, idle)
 }
 
 func (f *sessionFixture) ts(clientID string) ([]store.Evicted, error) {
-	return f.s.OpenTSSession(context.Background(), f.viewer, f.channel, clientID, "9.9.9.9", idle)
+	return f.s.OpenTSSession(context.Background(), testdb.LocalEdge(f.t), f.viewer, f.channel, clientID, "9.9.9.9", idle)
 }
 
 func (f *sessionFixture) active() int {
@@ -53,6 +53,12 @@ func (f *sessionFixture) age(key string, by time.Duration) {
 
 func wantEvicted(t *testing.T, got []store.Evicted, want ...store.Evicted) {
 	t.Helper()
+	// Edge belirtilmemişse yerel edge beklenir.
+	for i := range want {
+		if want[i].EdgeID == 0 {
+			want[i].EdgeID = testdb.LocalEdge(t)
+		}
+	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("yerinden edilen oturumlar %v, beklenen %v", got, want)
 	}
@@ -202,7 +208,7 @@ func TestConcurrentOpensCannotExceedTenantQuota(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := f.s.TouchHLSSession(ctx, v, f.channel, fmt.Sprintf("k%d", i), "1.1.1.1", idle)
+			_, err := f.s.TouchHLSSession(ctx, testdb.LocalEdge(t), v, f.channel, fmt.Sprintf("k%d", i), "1.1.1.1", idle)
 			switch {
 			case err == nil:
 				admitted.Add(1)
@@ -263,7 +269,7 @@ func TestTSSessionLifecycle(t *testing.T) {
 
 	ctx := context.Background()
 	for _, id := range []string{"c1", "c2", "bilinmeyen"} {
-		if err := f.s.CloseTSSession(ctx, id); err != nil {
+		if err := f.s.CloseTSSession(ctx, testdb.LocalEdge(t), id); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -281,10 +287,10 @@ func TestTenantConnectionQuotaRejectsWithoutEvicting(t *testing.T) {
 	other := must(f.s.CreateViewer(ctx, f.tenant, "veli", "pw", 1))
 	must(f.hls("k1", "1.1.1.1"))
 
-	if _, err := f.s.TouchHLSSession(ctx, other, f.channel, "k2", "2.2.2.2", idle); !errors.Is(err, store.ErrTenantConnectionLimit) {
+	if _, err := f.s.TouchHLSSession(ctx, testdb.LocalEdge(t), other, f.channel, "k2", "2.2.2.2", idle); !errors.Is(err, store.ErrTenantConnectionLimit) {
 		t.Fatalf("yayıncı kotası dolunca yeni izleyici reddedilmeli, gelen: %v", err)
 	}
-	if _, err := f.s.OpenTSSession(ctx, other, f.channel, "c9", "2.2.2.2", idle); !errors.Is(err, store.ErrTenantConnectionLimit) {
+	if _, err := f.s.OpenTSSession(ctx, testdb.LocalEdge(t), other, f.channel, "c9", "2.2.2.2", idle); !errors.Is(err, store.ErrTenantConnectionLimit) {
 		t.Fatalf(".ts için de reddedilmeli, gelen: %v", err)
 	}
 	if _, err := f.hls("k1", "1.1.1.1"); err != nil {
@@ -296,7 +302,7 @@ func TestTenantConnectionQuotaRejectsWithoutEvicting(t *testing.T) {
 
 func TestSessionForUnknownViewer(t *testing.T) {
 	f := newSessionFixture(t, 1)
-	if _, err := f.s.TouchHLSSession(context.Background(), f.viewer+999, f.channel, "k", "1.1.1.1", idle); !errors.Is(err, store.ErrNotFound) {
+	if _, err := f.s.TouchHLSSession(context.Background(), testdb.LocalEdge(t), f.viewer+999, f.channel, "k", "1.1.1.1", idle); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("ErrNotFound bekleniyordu, gelen: %v", err)
 	}
 }
@@ -312,19 +318,19 @@ func TestTSSessionsToKick(t *testing.T) {
 	orphan := must(f.s.CreateViewer(ctx, other, "yetim", "pw", 1))
 
 	must(f.ts("saglam"))
-	must(f.s.OpenTSSession(ctx, suspended, f.channel, "askida-c", "1.1.1.1", idle))
-	must(f.s.OpenTSSession(ctx, expired, f.channel, "dolmus-c", "1.1.1.1", idle))
-	must(f.s.OpenTSSession(ctx, orphan, otherChannel, "yetim-c", "1.1.1.1", idle))
+	must(f.s.OpenTSSession(ctx, testdb.LocalEdge(t), suspended, f.channel, "askida-c", "1.1.1.1", idle))
+	must(f.s.OpenTSSession(ctx, testdb.LocalEdge(t), expired, f.channel, "dolmus-c", "1.1.1.1", idle))
+	must(f.s.OpenTSSession(ctx, testdb.LocalEdge(t), orphan, otherChannel, "yetim-c", "1.1.1.1", idle))
 	limited := must(f.s.CreateViewer(ctx, f.tenant, "limitli", "pw", 1))
-	must(f.s.OpenTSSession(ctx, limited, f.channel, "eski-c", "1.1.1.1", idle))
-	must(f.s.OpenTSSession(ctx, limited, f.channel, "yeni-c", "1.1.1.1", idle))
+	must(f.s.OpenTSSession(ctx, testdb.LocalEdge(t), limited, f.channel, "eski-c", "1.1.1.1", idle))
+	must(f.s.OpenTSSession(ctx, testdb.LocalEdge(t), limited, f.channel, "yeni-c", "1.1.1.1", idle))
 	must(f.hls("hls-anahtar", "1.1.1.1"))
 
 	f.s.SetViewerStatus(ctx, suspended, "suspended")
 	f.s.SetViewerExpiry(ctx, expired, &past)
 	f.s.SetTenantStatus(ctx, other, "suspended")
 
-	got := must(f.s.TSSessionsToKick(ctx))
+	got := must(f.s.TSSessionsToKick(ctx, testdb.LocalEdge(t)))
 	want := "[askida-c dolmus-c eski-c yetim-c]"
 	if fmt.Sprint(got) != want {
 		t.Fatalf("kesilecek bağlantılar %v, beklenen %s", got, want)
@@ -342,14 +348,14 @@ func TestReconcileTSSessions(t *testing.T) {
 	f.age("olu", time.Minute)
 	f.age("hls-anahtar", time.Second)
 
-	n := must(f.s.ReconcileTSSessions(ctx, []string{"yasayan"}, 10*time.Second))
+	n := must(f.s.ReconcileTSSessions(ctx, testdb.LocalEdge(t), []string{"yasayan"}, 10*time.Second))
 	if n != 1 {
 		t.Fatalf("yalnızca SRS'te olmayan eski .ts oturumu silinmeli: %d", n)
 	}
 	if got := f.active(); got != 3 {
 		t.Fatalf("kalan etkin oturum %d, beklenen 3 (yasayan, yeni, hls)", got)
 	}
-	if n := must(f.s.ReconcileTSSessions(ctx, nil, 0)); n != 2 {
+	if n := must(f.s.ReconcileTSSessions(ctx, testdb.LocalEdge(t), nil, 0)); n != 2 {
 		t.Fatalf("boş listeyle 2 .ts oturumu silinmeli: %d", n)
 	}
 }

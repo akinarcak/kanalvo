@@ -50,7 +50,7 @@ var usernamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{3,32}$`)
 
 // reservedUsernames: kısa yayın adresi /<kullanıcı>/<şifre>/<kanal> biçimindedir; bu adlar
 // başka uçların ilk yol parçasıyla çakışır.
-var reservedUsernames = map[string]bool{"hls": true, "live": true, "api": true, "panel": true, "hooks": true, "healthz": true, "assets": true}
+var reservedUsernames = map[string]bool{"hls": true, "live": true, "api": true, "panel": true, "hooks": true, "healthz": true, "assets": true, "edge": true}
 
 func validUsername(s string) bool {
 	if !usernamePattern.MatchString(s) || reservedUsernames[strings.ToLower(s)] || strings.HasSuffix(strings.ToLower(s), ".php") {

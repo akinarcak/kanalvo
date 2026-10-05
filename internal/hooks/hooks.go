@@ -30,29 +30,37 @@ type Event struct {
 	Param    string `json:"param"`
 }
 
+// Edges, uzak edge'leri tanır (bkz. balancer.Balancer).
+type Edges interface {
+	ByKey(ctx context.Context, key string) (store.Edge, bool, error)
+	PullAllowed(ctx context.Context, ip string) (bool, error)
+}
+
 type Handler struct {
 	store    *store.Store
 	signer   *token.Signer
 	sessions *session.Manager
+	edges    Edges
 	now      func() time.Time
 }
 
-func New(s *store.Store, signer *token.Signer, sessions *session.Manager, now func() time.Time) *Handler {
-	return &Handler{store: s, signer: signer, sessions: sessions, now: now}
+func New(s *store.Store, signer *token.Signer, sessions *session.Manager, edges Edges, now func() time.Time) *Handler {
+	return &Handler{store: s, signer: signer, sessions: sessions, edges: edges, now: now}
 }
 
-// Register, SRS'in çağırdığı olayları kaydeder:
+// Register, kontrol sunucusundaki SRS'lerin çağırdığı olayları kaydeder. Bu uçlar dışarıya
+// açılmayan adreste dinlenir; localEdgeID, yerel .ts dağıtıcısının edge numarasıdır.
 //
 //	publish, unpublish : origin'e gelen yayın
-//	play, stop         : .ts dağıtıcısındaki izleme
-//	play-origin        : origin'e RTMP ile izleme denemesi; her zaman reddedilir
-func (h *Handler) Register(mux *http.ServeMux, secret string) {
+//	play, stop         : yerel .ts dağıtıcısındaki izleme
+//	play-origin        : origin'den RTMP ile izleme; yalnızca kayıtlı bir edge'in çekmesi kabul edilir
+func (h *Handler) Register(mux *http.ServeMux, secret string, localEdgeID int64) {
 	events := map[string]func(context.Context, Event) int{
 		"publish":     h.onPublish,
 		"unpublish":   h.onUnpublish,
-		"play":        h.onPlay,
-		"stop":        h.onStop,
-		"play-origin": func(context.Context, Event) int { return http.StatusForbidden },
+		"play":        func(ctx context.Context, ev Event) int { return h.onPlay(ctx, localEdgeID, ev) },
+		"stop":        func(ctx context.Context, ev Event) int { return h.onStop(ctx, localEdgeID, ev) },
+		"play-origin": h.onPlayOrigin,
 	}
 	mux.HandleFunc("POST /hooks/srs/{secret}/{event}", func(w http.ResponseWriter, r *http.Request) {
 		handle, known := events[r.PathValue("event")]
@@ -60,13 +68,63 @@ func (h *Handler) Register(mux *http.ServeMux, secret string) {
 			http.NotFound(w, r)
 			return
 		}
-		var ev Event
-		if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&ev); err != nil {
-			respond(w, http.StatusBadRequest)
+		serve(w, r, handle)
+	})
+}
+
+// RegisterEdge, uzak edge'lerin SRS'lerinin çağırdığı izleme olaylarını kaydeder (play, stop).
+// Bu uçlar izleyicilere açık adreste dinlenir; edge, adres yolundaki anahtarıyla tanınır
+// (SRS sorgulara başlık ekleyemez).
+func (h *Handler) RegisterEdge(mux *http.ServeMux) {
+	mux.HandleFunc("POST /edge/{key}/hooks/{event}", func(w http.ResponseWriter, r *http.Request) {
+		event := r.PathValue("event")
+		if event != "play" && event != "stop" {
+			http.NotFound(w, r)
 			return
 		}
-		respond(w, handle(r.Context(), ev))
+		edge, known, err := h.edges.ByKey(r.Context(), r.PathValue("key"))
+		if err != nil {
+			respond(w, failure(err))
+			return
+		}
+		if !known {
+			http.NotFound(w, r)
+			return
+		}
+		serve(w, r, func(ctx context.Context, ev Event) int {
+			if event == "play" {
+				return h.onPlay(ctx, edge.ID, ev)
+			}
+			return h.onStop(ctx, edge.ID, ev)
+		})
 	})
+}
+
+func serve(w http.ResponseWriter, r *http.Request, handle func(context.Context, Event) int) {
+	var ev Event
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&ev); err != nil {
+		respond(w, http.StatusBadRequest)
+		return
+	}
+	respond(w, handle(r.Context(), ev))
+}
+
+// onPlayOrigin: origin'e RTMP ile bağlanıp izlemek bir izleyici yolu değildir (oturum sayılmaz,
+// limit uygulanmaz). Yalnızca kayıtlı ve etkin bir edge'in çekme adresinden gelen istek kabul
+// edilir. İmzaya bakılmaz: edge, çekmeyi tetikleyen ilk izleyicinin imzasını gönderir ve yeniden
+// bağlanırken bu imzanın süresi dolmuş olabilir.
+func (h *Handler) onPlayOrigin(ctx context.Context, ev Event) int {
+	if _, ok := channelID(ev); !ok {
+		return http.StatusForbidden
+	}
+	allowed, err := h.edges.PullAllowed(ctx, ev.IP)
+	if err != nil {
+		return failure(err)
+	}
+	if !allowed {
+		return http.StatusForbidden
+	}
+	return http.StatusOK
 }
 
 func (h *Handler) onPublish(ctx context.Context, ev Event) int {
@@ -104,8 +162,9 @@ func (h *Handler) onUnpublish(ctx context.Context, ev Event) int {
 	return http.StatusOK
 }
 
-// onPlay, kesintisiz .ts izlemesini yetkilendirir ve oturumunu açar. HLS bu yoldan geçmez (bkz. hlsgw).
-func (h *Handler) onPlay(ctx context.Context, ev Event) int {
+// onPlay, bir edge'deki kesintisiz .ts izlemesini yetkilendirir ve oturumunu açar. HLS bu yoldan
+// geçmez (bkz. hlsgw).
+func (h *Handler) onPlay(ctx context.Context, edgeID int64, ev Event) int {
 	id, ok := channelID(ev)
 	if !ok {
 		return http.StatusForbidden
@@ -127,7 +186,7 @@ func (h *Handler) onPlay(ctx context.Context, ev Event) int {
 		return http.StatusForbidden
 	}
 	// İzleyici limitindeyse en eski bağlantısı kesilir; yayıncının kotası doluysa izleme reddedilir.
-	if err := h.sessions.OpenTS(ctx, v.ID, ch.ID, ev.ClientID, ev.IP); err != nil {
+	if err := h.sessions.OpenTS(ctx, edgeID, v.ID, ch.ID, ev.ClientID, ev.IP); err != nil {
 		if errors.Is(err, store.ErrTenantConnectionLimit) || errors.Is(err, store.ErrSessionRevoked) {
 			return http.StatusForbidden
 		}
@@ -137,8 +196,8 @@ func (h *Handler) onPlay(ctx context.Context, ev Event) int {
 }
 
 // onStop her zaman kabul eder; izleme zaten bitmiştir.
-func (h *Handler) onStop(ctx context.Context, ev Event) int {
-	if err := h.sessions.CloseTS(ctx, ev.ClientID); err != nil {
+func (h *Handler) onStop(ctx context.Context, edgeID int64, ev Event) int {
+	if err := h.sessions.CloseTS(ctx, edgeID, ev.ClientID); err != nil {
 		log.Printf("hooks: oturum kapatılamadı, eşitleme döngüsü temizleyecek: %v", err)
 	}
 	return http.StatusOK

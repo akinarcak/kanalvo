@@ -27,9 +27,9 @@ type Config struct {
 	PanelTrustProxyHeaders bool
 	// IngestBaseURL, yayıncıların OBS'e yazacağı sunucu adresidir (ör. rtmp://yayin.example.com/live).
 	IngestBaseURL string
-	DatabaseURL string
-	TokenKey    []byte
-	HookSecret  string
+	DatabaseURL   string
+	TokenKey      []byte
+	HookSecret    string
 	// PublicBaseURL, oynatıcıların Xtream uçlarına ulaştığı dış adrestir; M3U listesindeki
 	// yayın adresleri ve giriş yanıtındaki sunucu bilgisi bundan üretilir.
 	PublicBaseURL string

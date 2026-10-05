@@ -93,8 +93,8 @@ func TestListTenantsAndStats(t *testing.T) {
 	must(s.CreateChannel(ctx, b, "c3", "s3"))
 	v := must(s.CreateViewer(ctx, a, "ali", "pw", 2))
 	must(s.MarkLive(ctx, c1, "p1"))
-	must(s.OpenTSSession(ctx, v, c1, "t1", "1.1.1.1", idle))
-	must(s.TouchHLSSession(ctx, v, c1, "h1", "1.1.1.1", idle))
+	must(s.OpenTSSession(ctx, testdb.LocalEdge(t), v, c1, "t1", "1.1.1.1", idle))
+	must(s.TouchHLSSession(ctx, testdb.LocalEdge(t), v, c1, "h1", "1.1.1.1", idle))
 
 	list := must(s.ListTenants(ctx, idle))
 	if len(list) != 2 || list[0].ID != a || list[1].ID != b {
@@ -172,11 +172,11 @@ func TestPanelSessions(t *testing.T) {
 
 // manageFixture: iki yayıncı; her birinin bir kategorisi, bir kanalı ve bir izleyicisi vardır.
 type manageFixture struct {
-	s                      *store.Store
-	a, b                   int64
-	catA, catB             int64
-	chanA, chanB           int64
-	viewerA, viewerB       int64
+	s                *store.Store
+	a, b             int64
+	catA, catB       int64
+	chanA, chanB     int64
+	viewerA, viewerB int64
 }
 
 func newManageFixture(t *testing.T) *manageFixture {
@@ -247,7 +247,7 @@ func TestChannelManagementIsTenantScoped(t *testing.T) {
 	}
 
 	// Silinen kanalın oturumları da silinir.
-	must(s.OpenTSSession(ctx, f.viewerA, f.chanA, "t1", "1.1.1.1", idle))
+	must(s.OpenTSSession(ctx, testdb.LocalEdge(t), f.viewerA, f.chanA, "t1", "1.1.1.1", idle))
 	if err := s.DeleteChannel(ctx, f.a, f.chanA); err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +300,7 @@ func TestViewerManagementIsTenantScoped(t *testing.T) {
 		t.Fatalf("başka yayıncıdaki kullanıcı adı da alınamaz, gelen: %v", err)
 	}
 
-	must(s.OpenTSSession(ctx, f.viewerA, f.chanA, "t1", "1.1.1.1", idle))
+	must(s.OpenTSSession(ctx, testdb.LocalEdge(t), f.viewerA, f.chanA, "t1", "1.1.1.1", idle))
 	if err := s.DeleteViewer(ctx, f.a, f.viewerA); err != nil {
 		t.Fatal(err)
 	}
@@ -316,9 +316,9 @@ func TestActiveSessionsByTenantAndConnections(t *testing.T) {
 	s := f.s
 	must(s.MarkLive(ctx, f.chanA, "yayinci-a"))
 	second := must(s.CreateViewer(ctx, f.a, "ayse", "p", 1))
-	must(s.OpenTSSession(ctx, f.viewerA, f.chanA, "t1", "1.1.1.1", idle))
-	must(s.TouchHLSSession(ctx, second, f.chanA, "h1", "2.2.2.2", idle))
-	must(s.OpenTSSession(ctx, f.viewerB, f.chanB, "t9", "9.9.9.9", idle))
+	must(s.OpenTSSession(ctx, testdb.LocalEdge(t), f.viewerA, f.chanA, "t1", "1.1.1.1", idle))
+	must(s.TouchHLSSession(ctx, testdb.LocalEdge(t), second, f.chanA, "h1", "2.2.2.2", idle))
+	must(s.OpenTSSession(ctx, testdb.LocalEdge(t), f.viewerB, f.chanB, "t9", "9.9.9.9", idle))
 
 	list := must(s.ActiveSessionsByTenant(ctx, f.a, idle))
 	if len(list) != 2 {

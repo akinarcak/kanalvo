@@ -14,7 +14,7 @@ import (
 func pending(t *testing.T, s *store.Store) string {
 	t.Helper()
 	ctx := context.Background()
-	return fmt.Sprintf("origin=%v ts=%v", must(s.PendingKicks(ctx, "origin")), must(s.PendingKicks(ctx, "ts")))
+	return fmt.Sprintf("origin=%v ts=%v", must(s.PendingOriginKicks(ctx)), must(s.PendingEdgeKicks(ctx, testdb.LocalEdge(t))))
 }
 
 // Silinen kanalın yayıncısı ve .ts izleyicileri, silme ile aynı işlemde kesilmek üzere kaydedilir.
@@ -23,9 +23,9 @@ func TestDeletingAChannelQueuesItsConnections(t *testing.T) {
 	s := f.s
 	must(s.MarkLive(ctx, f.chanA, "yayinci-a"))
 	must(s.MarkLive(ctx, f.chanB, "yayinci-b"))
-	must(s.OpenTSSession(ctx, f.viewerA, f.chanA, "izleyen-a", "1.1.1.1", idle))
-	must(s.TouchHLSSession(ctx, f.viewerA, f.chanA, "hls-a", "1.1.1.1", idle))
-	must(s.OpenTSSession(ctx, f.viewerB, f.chanB, "izleyen-b", "1.1.1.1", idle))
+	must(s.OpenTSSession(ctx, testdb.LocalEdge(t), f.viewerA, f.chanA, "izleyen-a", "1.1.1.1", idle))
+	must(s.TouchHLSSession(ctx, testdb.LocalEdge(t), f.viewerA, f.chanA, "hls-a", "1.1.1.1", idle))
+	must(s.OpenTSSession(ctx, testdb.LocalEdge(t), f.viewerB, f.chanB, "izleyen-b", "1.1.1.1", idle))
 
 	notFound(t, "başka yayıncının kanalı", s.DeleteChannel(ctx, f.a, f.chanB))
 	if got := pending(t, s); got != "origin=[] ts=[]" {
@@ -59,9 +59,9 @@ func TestDeletingAViewerQueuesItsTSConnections(t *testing.T) {
 	if err := s.UpdateViewer(ctx, f.a, f.viewerA, store.ViewerUpdate{MaxConnections: ptr(3)}); err != nil {
 		t.Fatal(err)
 	}
-	must(s.OpenTSSession(ctx, f.viewerA, f.chanA, "izleyen-1", "1.1.1.1", idle))
-	must(s.OpenTSSession(ctx, f.viewerA, f.chanA, "izleyen-2", "1.1.1.1", idle))
-	must(s.TouchHLSSession(ctx, f.viewerA, f.chanA, "hls-1", "1.1.1.1", idle))
+	must(s.OpenTSSession(ctx, testdb.LocalEdge(t), f.viewerA, f.chanA, "izleyen-1", "1.1.1.1", idle))
+	must(s.OpenTSSession(ctx, testdb.LocalEdge(t), f.viewerA, f.chanA, "izleyen-2", "1.1.1.1", idle))
+	must(s.TouchHLSSession(ctx, testdb.LocalEdge(t), f.viewerA, f.chanA, "hls-1", "1.1.1.1", idle))
 
 	notFound(t, "başka yayıncının izleyicisi", s.DeleteViewer(ctx, f.a, f.viewerB))
 	if err := s.DeleteViewer(ctx, f.a, f.viewerA); err != nil {
@@ -102,17 +102,17 @@ func TestRegeneratingAViewerPasswordRevokesItsSessions(t *testing.T) {
 	if err := s.UpdateViewer(ctx, f.a, f.viewerA, store.ViewerUpdate{MaxConnections: ptr(2)}); err != nil {
 		t.Fatal(err)
 	}
-	must(s.OpenTSSession(ctx, f.viewerA, f.chanA, "izleyen-1", "1.1.1.1", idle))
-	must(s.TouchHLSSession(ctx, f.viewerA, f.chanA, "hls-1", "1.1.1.1", idle))
-	must(s.OpenTSSession(ctx, f.viewerB, f.chanB, "izleyen-b", "1.1.1.1", idle))
+	must(s.OpenTSSession(ctx, testdb.LocalEdge(t), f.viewerA, f.chanA, "izleyen-1", "1.1.1.1", idle))
+	must(s.TouchHLSSession(ctx, testdb.LocalEdge(t), f.viewerA, f.chanA, "hls-1", "1.1.1.1", idle))
+	must(s.OpenTSSession(ctx, testdb.LocalEdge(t), f.viewerB, f.chanB, "izleyen-b", "1.1.1.1", idle))
 
 	if err := s.SetViewerPassword(ctx, f.a, f.viewerA, "yeni"); err != nil {
 		t.Fatal(err)
 	}
-	if ids := must(s.TSSessionsToKick(ctx)); fmt.Sprint(ids) != "[izleyen-1]" {
+	if ids := must(s.TSSessionsToKick(ctx, testdb.LocalEdge(t))); fmt.Sprint(ids) != "[izleyen-1]" {
 		t.Fatalf("yalnızca o izleyicinin .ts bağlantısı kesilmeli: %v", ids)
 	}
-	if _, err := s.TouchHLSSession(ctx, f.viewerA, f.chanA, "hls-1", "1.1.1.1", idle); !errors.Is(err, store.ErrSessionRevoked) {
+	if _, err := s.TouchHLSSession(ctx, testdb.LocalEdge(t), f.viewerA, f.chanA, "hls-1", "1.1.1.1", idle); !errors.Is(err, store.ErrSessionRevoked) {
 		t.Fatalf("eski HLS oturumu reddedilmeli, gelen: %v", err)
 	}
 	if n := must(s.ActiveSessionCount(ctx, f.viewerB, idle)); n != 1 {
@@ -125,11 +125,11 @@ func TestResolvingAndExpiringPendingKicks(t *testing.T) {
 	f, ctx := newManageFixture(t), context.Background()
 	s := f.s
 	must(s.MarkLive(ctx, f.chanA, "yayinci-a"))
-	must(s.OpenTSSession(ctx, f.viewerA, f.chanA, "izleyen-a", "1.1.1.1", idle))
+	must(s.OpenTSSession(ctx, testdb.LocalEdge(t), f.viewerA, f.chanA, "izleyen-a", "1.1.1.1", idle))
 	if err := s.DeleteChannel(ctx, f.a, f.chanA); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ResolveKick(ctx, "origin", "yayinci-a"); err != nil {
+	if err := s.ResolveOriginKick(ctx, "yayinci-a"); err != nil {
 		t.Fatal(err)
 	}
 	if got := pending(t, s); got != "origin=[] ts=[izleyen-a]" {

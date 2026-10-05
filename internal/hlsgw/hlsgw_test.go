@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"streamhub/internal/balancer"
 	"streamhub/internal/hlsgw"
 	"streamhub/internal/session"
 	"streamhub/internal/session/sessiontest"
@@ -33,8 +34,11 @@ type fixture struct {
 	channel int64
 	viewer  int64
 
-	mu   sync.Mutex
-	seen []string // SRS'e giden isteklerin "yol?sorgu" biçimi
+	local int64
+
+	mu        sync.Mutex
+	seen      []string // SRS'e giden isteklerin "yol?sorgu" biçimi
+	keyLeaked bool     // edge anahtarı SRS'e aktarıldı mı
 }
 
 func must[T any](v T, err error) T {
@@ -57,6 +61,9 @@ func setup(t *testing.T) *fixture {
 	srs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.seen = append(f.seen, r.URL.Path+"?"+r.URL.RawQuery)
+		if r.Header.Get(balancer.KeyHeader) != "" {
+			f.keyLeaked = true
+		}
 		f.mu.Unlock()
 		switch r.URL.Path {
 		case "/live/1.m3u8":
@@ -72,8 +79,12 @@ func setup(t *testing.T) *fixture {
 	t.Cleanup(srs.Close)
 
 	f.srs = &sessiontest.FakeSRS{}
-	f.manager = session.New(f.store, f.srs, f.srs, 30*time.Second, 6*time.Hour)
-	hlsgw.New(f.store, f.signer, f.manager, must(url.Parse(srs.URL)), time.Second, false, func() time.Time { return now }).Register(f.mux)
+	f.manager = session.New(f.store, sessiontest.For(f.srs), f.srs, 30*time.Second, 6*time.Hour)
+	f.local = testdb.LocalEdge(t)
+	gw := hlsgw.New(f.store, f.signer, f.manager, balancer.New(f.store, 15*time.Second, 0), f.local,
+		must(url.Parse(srs.URL)), time.Second, false, func() time.Time { return now })
+	gw.Register(f.mux)
+	gw.RegisterEdge(f.mux)
 	return f
 }
 
@@ -295,7 +306,7 @@ func TestUpstreamDownIsBadGateway(t *testing.T) {
 	f := setup(t)
 	mux := http.NewServeMux()
 	dead := must(url.Parse("http://127.0.0.1:1"))
-	hlsgw.New(f.store, f.signer, f.manager, dead, time.Second, false, func() time.Time { return now }).Register(mux)
+	hlsgw.New(f.store, f.signer, f.manager, balancer.New(f.store, 15*time.Second, 0), f.local, dead, time.Second, false, func() time.Time { return now }).Register(mux)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hls/"+f.valid()+"/1.m3u8", nil))
@@ -312,7 +323,7 @@ func TestHungUpstreamIsBadGateway(t *testing.T) {
 	t.Cleanup(func() { close(release) })
 
 	mux := http.NewServeMux()
-	hlsgw.New(f.store, f.signer, f.manager, must(url.Parse(hung.URL)), 200*time.Millisecond, false, func() time.Time { return now }).Register(mux)
+	hlsgw.New(f.store, f.signer, f.manager, balancer.New(f.store, 15*time.Second, 0), f.local, must(url.Parse(hung.URL)), 200*time.Millisecond, false, func() time.Time { return now }).Register(mux)
 
 	start := time.Now()
 	rec := httptest.NewRecorder()

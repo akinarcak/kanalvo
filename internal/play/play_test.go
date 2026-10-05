@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"streamhub/internal/auth"
+	"streamhub/internal/balancer"
 	"streamhub/internal/play"
 	"streamhub/internal/ratelimit"
 	"streamhub/internal/store"
@@ -35,6 +36,7 @@ type fixture struct {
 	tenant  int64
 	channel int64
 	viewer  int64
+	local   int64
 }
 
 func must[T any](v T, err error) T {
@@ -54,9 +56,15 @@ func setupWithLimit(t *testing.T, maxFailures int) *fixture {
 	f.channel = must(f.store.CreateChannel(ctx, f.tenant, "c", "gizli-anahtar"))
 	f.viewer = must(f.store.CreateViewer(ctx, f.tenant, "ali", "pw", 1))
 	must(f.store.MarkLive(ctx, f.channel, "a"))
-	opts := play.Options{TSBaseURL: tsBase, HLSBaseURL: hlsBase, TSTokenTTL: tsTTL, HLSTokenTTL: hlsTTL}
+	// Yerel edge sağlıklıdır: yönlendirmeler ona gider.
+	f.local = must(f.store.SyncLocalEdge(ctx, tsBase, hlsBase))
+	if err := f.store.MarkEdgeSeen(ctx, f.local); err != nil {
+		t.Fatal(err)
+	}
+	opts := play.Options{TSTokenTTL: tsTTL, HLSTokenTTL: hlsTTL}
 	authn := auth.New(f.store, ratelimit.New(maxFailures, time.Minute, time.Now), false)
-	play.New(f.store, authn, f.signer, opts, func() time.Time { return now }).Register(f.mux)
+	edges := balancer.New(f.store, 15*time.Second, 0)
+	play.New(f.store, authn, f.signer, edges, opts, func() time.Time { return now }).Register(f.mux)
 	return f
 }
 

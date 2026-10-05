@@ -1,4 +1,4 @@
-// Package panelapi, yönetim panelinin JSON API'sidir: giriş, yönetici işlemleri (yayıncılar) ve
+// Package panelapi, yönetim panelinin JSON API'sidir: giriş, yönetici işlemleri (yayıncılar, edge'ler) ve
 // yayıncı işlemleri (kategori, kanal, izleyici, oturum).
 //
 // Yayıncı kimliği her zaman oturumdan alınır; istekle gelen hiçbir değer hangi yayıncının
@@ -47,6 +47,9 @@ type Config struct {
 	PublicBaseURL string
 	// Idle, HLS oturumunun bağlantı sayımından düşme süresidir (session.Manager ile aynı olmalı).
 	Idle time.Duration
+	// EdgeHealthWindow: bu süre içinde sağlık sinyali vermiş edge sağlıklı gösterilir (yönlendirme
+	// kararını veren balancer ile aynı olmalı).
+	EdgeHealthWindow time.Duration
 }
 
 // Aynı anda yürüyen şifre işlemi sayısı ve sıra bekleme süresi (bkz. passhash.Gate).
@@ -79,6 +82,11 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/admin/tenants/{id}", h.as(roleAdmin, h.adminGetTenant))
 	mux.HandleFunc("PATCH /api/admin/tenants/{id}", h.as(roleAdmin, h.adminUpdateTenant))
 	mux.HandleFunc("POST /api/admin/tenants/{id}/reset-password", h.as(roleAdmin, h.adminResetPassword))
+
+	mux.HandleFunc("GET /api/admin/edges", h.as(roleAdmin, h.adminListEdges))
+	mux.HandleFunc("POST /api/admin/edges", h.as(roleAdmin, h.adminCreateEdge))
+	mux.HandleFunc("PATCH /api/admin/edges/{id}", h.as(roleAdmin, h.adminUpdateEdge))
+	mux.HandleFunc("DELETE /api/admin/edges/{id}", h.as(roleAdmin, h.adminDeleteEdge))
 
 	mux.HandleFunc("GET /api/tenant/overview", h.as(roleTenant, h.overview))
 	mux.HandleFunc("GET /api/tenant/categories", h.as(roleTenant, h.listCategories))

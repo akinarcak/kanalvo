@@ -2,6 +2,7 @@
 package play
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -13,31 +14,35 @@ import (
 	"time"
 
 	"streamhub/internal/auth"
+	"streamhub/internal/balancer"
 	"streamhub/internal/store"
 	"streamhub/internal/token"
 )
 
 type Options struct {
-	// TSBaseURL, kesintisiz .ts veren SRS'in dış adresidir. İmza sorgu parametresinde gider
-	// ve yalnızca izleme başlarken doğrulanır.
-	TSBaseURL  string
+	// .ts imzası sorgu parametresinde gider ve yalnızca izleme başlarken doğrulanır.
 	TSTokenTTL time.Duration
-	// HLSBaseURL, /hls geçidinin dış adresidir. İmza yolun içinde gider (göreli parça
-	// adresleri onu devralsın diye) ve her istekte doğrulanır.
-	HLSBaseURL  string
+	// HLS imzası yolun içinde gider (göreli parça adresleri onu devralsın diye) ve her istekte doğrulanır.
 	HLSTokenTTL time.Duration
+}
+
+// Picker, bir izleme türü ("ts" veya "hls") için izleyicinin yönlendirileceği edge'i seçer;
+// uygun edge yoksa balancer.ErrNoEdge döner.
+type Picker interface {
+	Pick(ctx context.Context, kind string) (store.Edge, error)
 }
 
 type Handler struct {
 	store  *store.Store
 	auth   *auth.Authenticator
 	signer *token.Signer
+	edges  Picker
 	opts   Options
 	now    func() time.Time
 }
 
-func New(s *store.Store, a *auth.Authenticator, signer *token.Signer, opts Options, now func() time.Time) *Handler {
-	return &Handler{store: s, auth: a, signer: signer, opts: opts, now: now}
+func New(s *store.Store, a *auth.Authenticator, signer *token.Signer, edges Picker, opts Options, now func() time.Time) *Handler {
+	return &Handler{store: s, auth: a, signer: signer, edges: edges, opts: opts, now: now}
 }
 
 // Register, Xtream oynatıcılarının kullandığı iki yol biçimini kaydeder:
@@ -86,19 +91,34 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	kind := balancer.TS
+	if ext == "m3u8" {
+		kind = balancer.HLS
+	}
+	edge, err := h.edges.Pick(r.Context(), kind)
+	if errors.Is(err, balancer.ErrNoEdge) {
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+
 	w.Header().Set("Cache-Control", "no-store")
-	http.Redirect(w, r, h.target(v.ID, ch.ID, ext, now), http.StatusFound)
+	http.Redirect(w, r, h.target(edge, v.ID, ch.ID, kind, now), http.StatusFound)
 }
 
-func (h *Handler) target(viewerID, channelID int64, ext string, now time.Time) string {
+func (h *Handler) target(edge store.Edge, viewerID, channelID int64, kind string, now time.Time) string {
 	claims := token.Claims{ViewerID: viewerID, ChannelID: channelID}
-	if ext == "m3u8" {
+	if kind == balancer.HLS {
 		claims.Kind, claims.ExpiresAt = token.KindHLS, now.Add(h.opts.HLSTokenTTL)
 		claims.Session = newSessionKey()
-		return fmt.Sprintf("%s/hls/%s/%d.m3u8", h.opts.HLSBaseURL, h.signer.Sign(claims), channelID)
+		return fmt.Sprintf("%s/hls/%s/%d.m3u8", edge.HLSBaseURL, h.signer.Sign(claims), channelID)
 	}
 	claims.Kind, claims.ExpiresAt = token.KindTS, now.Add(h.opts.TSTokenTTL)
-	return fmt.Sprintf("%s/live/%d.ts?token=%s", h.opts.TSBaseURL, channelID, h.signer.Sign(claims))
+	return fmt.Sprintf("%s/live/%d.ts?token=%s", edge.TSBaseURL, channelID, h.signer.Sign(claims))
 }
 
 // newSessionKey, bir HLS izlemesini diğerlerinden ayıran rastgele anahtarı üretir.

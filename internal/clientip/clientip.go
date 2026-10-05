@@ -26,6 +26,17 @@ func Key(r *http.Request, trustProxyHeaders bool) string {
 			ip = parsed
 		}
 	}
+	return key(ip)
+}
+
+// Normalize, metin olarak verilen bir adresi Key ile aynı biçime çevirir. Adres, güvenilen bir
+// kaynaktan (ör. kimliği doğrulanmış bir edge'in bildirdiği izleyici adresi) gelmelidir.
+func Normalize(raw string) string {
+	ip, _ := netip.ParseAddr(strings.TrimSpace(raw))
+	return key(ip)
+}
+
+func key(ip netip.Addr) string {
 	ip = ip.Unmap()
 	switch {
 	case !ip.IsValid():

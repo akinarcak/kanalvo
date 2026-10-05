@@ -27,15 +27,15 @@ var now = time.Date(2026, 10, 5, 12, 30, 45, 0, time.UTC)
 // fixture: t1 yayıncısında "Spor" kategorisi, kategorili K1 ve kategorisiz K2 kanalları ve
 // "ali" izleyicisi; t2 yayıncısında başka bir kategori, kanal ve "veli" izleyicisi vardır.
 type fixture struct {
-	t      *testing.T
-	store  *store.Store
-	mux    *http.ServeMux
+	t       *testing.T
+	store   *store.Store
+	mux     *http.ServeMux
 	manager *session.Manager
-	t1, t2 int64
-	spor   int64
-	k1, k2 int64
-	ali    int64
-	other  int64 // t2'nin kategorisi
+	t1, t2  int64
+	spor    int64
+	k1, k2  int64
+	ali     int64
+	other   int64 // t2'nin kategorisi
 }
 
 func must[T any](v T, err error) T {
@@ -68,7 +68,7 @@ func setup(t *testing.T) *fixture {
 	base := must(url.Parse("http://tv.example.com:8000"))
 	authn := auth.New(s, ratelimit.New(maxFailures, time.Minute, time.Now), false)
 	srs := &sessiontest.FakeSRS{}
-	f.manager = session.New(s, srs, srs, 30*time.Second, 6*time.Hour)
+	f.manager = session.New(s, sessiontest.For(srs), srs, 30*time.Second, 6*time.Hour)
 	xtream.New(s, authn, f.manager, base, func() time.Time { return now }).Register(f.mux)
 	return f
 }
@@ -141,10 +141,10 @@ func TestAccountInfo(t *testing.T) {
 func TestAccountInfoReportsActiveConnections(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
-	if err := f.manager.TouchHLS(ctx, f.ali, f.k1, "aa", "1.1.1.1"); err != nil {
+	if err := f.manager.TouchHLS(ctx, testdb.LocalEdge(t), f.ali, f.k1, "aa", "1.1.1.1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.manager.OpenTS(ctx, f.ali, f.k2, "c1", "1.1.1.1"); err != nil {
+	if err := f.manager.OpenTS(ctx, testdb.LocalEdge(t), f.ali, f.k2, "c1", "1.1.1.1"); err != nil {
 		t.Fatal(err)
 	}
 	a := decode[account](t, f.api(""))

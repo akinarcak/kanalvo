@@ -32,8 +32,8 @@ type fixture struct {
 	store    *store.Store
 	sessions *session.Manager
 	mux      *http.ServeMux
-	ts     *sessiontest.FakeSRS // .ts dağıtıcısı
-	origin *sessiontest.FakeSRS
+	ts       *sessiontest.FakeSRS // .ts dağıtıcısı
+	origin   *sessiontest.FakeSRS
 }
 
 func must[T any](v T, err error) T {
@@ -48,14 +48,15 @@ func setup(t *testing.T) *fixture { return setupWith(t, false) }
 func setupWith(t *testing.T, secureCookie bool) *fixture {
 	f := &fixture{t: t, store: testdb.New(t), mux: http.NewServeMux(), ts: &sessiontest.FakeSRS{}, origin: &sessiontest.FakeSRS{}}
 	must(f.store.CreateAdmin(context.Background(), adminEmail, must(passhash.Hash(adminPassword))))
-	f.sessions = session.New(f.store, f.ts, f.origin, idle, 6*time.Hour)
+	f.sessions = session.New(f.store, sessiontest.For(f.ts), f.origin, idle, 6*time.Hour)
 	limiter := ratelimit.New(maxLoginFails, time.Minute, time.Now)
 	panelapi.New(f.store, f.sessions, limiter, panelapi.Config{
-		SessionTTL:    time.Hour,
-		SecureCookie:  secureCookie,
-		IngestURL:     "rtmp://yayin.example.com/live",
-		PublicBaseURL: "http://tv.example.com:8000",
-		Idle:          idle,
+		SessionTTL:       time.Hour,
+		SecureCookie:     secureCookie,
+		IngestURL:        "rtmp://yayin.example.com/live",
+		PublicBaseURL:    "http://tv.example.com:8000",
+		Idle:             idle,
+		EdgeHealthWindow: 15 * time.Second,
 	}).Register(f.mux)
 	return f
 }
@@ -121,10 +122,10 @@ func (c *client) do(method, path string, body any) response {
 	return response{code: rec.Code, body: rec.Body.String(), rec: rec}
 }
 
-func (c *client) get(path string) response            { return c.do(http.MethodGet, path, nil) }
-func (c *client) post(path string, b any) response    { return c.do(http.MethodPost, path, b) }
-func (c *client) patch(path string, b any) response   { return c.do(http.MethodPatch, path, b) }
-func (c *client) delete(path string) response         { return c.do(http.MethodDelete, path, nil) }
+func (c *client) get(path string) response          { return c.do(http.MethodGet, path, nil) }
+func (c *client) post(path string, b any) response  { return c.do(http.MethodPost, path, b) }
+func (c *client) patch(path string, b any) response { return c.do(http.MethodPatch, path, b) }
+func (c *client) delete(path string) response       { return c.do(http.MethodDelete, path, nil) }
 func (c *client) want(r response, code int) response {
 	c.f.t.Helper()
 	if r.code != code {
@@ -372,7 +373,7 @@ func TestAdminManagesTenants(t *testing.T) {
 	tenant.viewer("izleyici1")
 
 	for name, body := range map[string]map[string]string{
-		"aynı e-posta":      {"name": "B", "email": "A@example.com"},
+		"aynı e-posta":       {"name": "B", "email": "A@example.com"},
 		"yönetici e-postası": {"name": "B", "email": adminEmail},
 	} {
 		if r := admin.post("/api/admin/tenants", body); r.code != http.StatusConflict {
@@ -513,7 +514,7 @@ func TestChannelLifecycle(t *testing.T) {
 
 	// Kanal silinince yayıncı ve .ts izleyicileri kesilir.
 	v := tenant.viewer("izleyici1")
-	must(f.store.OpenTSSession(ctx, v.ID, ch.ID, "izleyen-1", "1.1.1.1", idle))
+	must(f.store.OpenTSSession(ctx, testdb.LocalEdge(f.t), v.ID, ch.ID, "izleyen-1", "1.1.1.1", idle))
 	tenant.want(tenant.delete(path), http.StatusNoContent)
 	if f.origin.Kicked() != "[yayinci-1 yayinci-1]" || f.ts.Kicked() != "[izleyen-1]" {
 		t.Fatalf("silinen kanalın bağlantıları kesilmeli: origin=%s ts=%s", f.origin.Kicked(), f.ts.Kicked())
@@ -563,10 +564,10 @@ func TestViewerLifecycle(t *testing.T) {
 		t.Fatal("bitiş tarihi kaldırılabilmeli")
 	}
 	for name, body := range map[string]map[string]any{
-		"geçersiz durum":  {"status": "silindi", "max_connections": 1},
-		"sıfır bağlantı":  {"status": "active", "max_connections": 0},
-		"çok bağlantı":    {"status": "active", "max_connections": 1000},
-		"bozuk tarih":     {"status": "active", "max_connections": 1, "expires_at": "yarın"},
+		"geçersiz durum": {"status": "silindi", "max_connections": 1},
+		"sıfır bağlantı": {"status": "active", "max_connections": 0},
+		"çok bağlantı":   {"status": "active", "max_connections": 1000},
+		"bozuk tarih":    {"status": "active", "max_connections": 1, "expires_at": "yarın"},
 	} {
 		if r := tenant.patch(path, body); r.code != http.StatusBadRequest {
 			t.Errorf("%s: durum %d", name, r.code)
@@ -581,7 +582,7 @@ func TestViewerLifecycle(t *testing.T) {
 
 	ctx := context.Background()
 	ch := tenant.channel("K")
-	must(f.store.OpenTSSession(ctx, v.ID, ch.ID, "izleyen-1", "1.1.1.1", idle))
+	must(f.store.OpenTSSession(ctx, testdb.LocalEdge(f.t), v.ID, ch.ID, "izleyen-1", "1.1.1.1", idle))
 	var sessions []struct{ Viewer, Channel, Kind, IP string }
 	tenant.want(tenant.get("/api/tenant/sessions"), http.StatusOK).into(t, &sessions)
 	if len(sessions) != 1 || sessions[0].Viewer != "izleyici_1" || sessions[0].Channel != "K" || sessions[0].Kind != "ts" {
@@ -631,7 +632,7 @@ func TestTenantsCannotTouchEachOthersRecords(t *testing.T) {
 	// B'nin kanalı yayında ve izleniyor: saldırılar bu bağlantılara da dokunamamalı.
 	bg := context.Background()
 	must(f.store.MarkLive(bg, ch.ID, "b-yayinci"))
-	must(f.store.OpenTSSession(bg, v.ID, ch.ID, "b-izleyen", "9.9.9.9", idle))
+	must(f.store.OpenTSSession(bg, testdb.LocalEdge(f.t), v.ID, ch.ID, "b-izleyen", "9.9.9.9", idle))
 
 	attacks := []response{
 		a.patch(fmt.Sprintf("/api/tenant/channels/%d", ch.ID), map[string]any{"name": "ele geçirildi"}),
@@ -771,14 +772,14 @@ func TestRegeneratingAViewerPasswordEndsRunningPlayback(t *testing.T) {
 	ch := tenant.channel("K")
 	v := tenant.viewer("izleyici1")
 	tenant.want(tenant.patch(fmt.Sprintf("/api/tenant/viewers/%d", v.ID), map[string]any{"max_connections": 2}), http.StatusOK)
-	must(f.store.OpenTSSession(ctx, v.ID, ch.ID, "izleyen-1", "1.1.1.1", idle))
-	must(f.store.TouchHLSSession(ctx, v.ID, ch.ID, "hls-1", "1.1.1.1", idle))
+	must(f.store.OpenTSSession(ctx, testdb.LocalEdge(f.t), v.ID, ch.ID, "izleyen-1", "1.1.1.1", idle))
+	must(f.store.TouchHLSSession(ctx, testdb.LocalEdge(f.t), v.ID, ch.ID, "hls-1", "1.1.1.1", idle))
 
 	tenant.want(tenant.post(fmt.Sprintf("/api/tenant/viewers/%d/regenerate-password", v.ID), nil), http.StatusOK)
 	if f.ts.Kicked() != "[izleyen-1]" {
 		t.Fatalf(".ts izlemesi kesilmeli: %s", f.ts.Kicked())
 	}
-	if _, err := f.store.TouchHLSSession(ctx, v.ID, ch.ID, "hls-1", "1.1.1.1", idle); !errors.Is(err, store.ErrSessionRevoked) {
+	if _, err := f.store.TouchHLSSession(ctx, testdb.LocalEdge(f.t), v.ID, ch.ID, "hls-1", "1.1.1.1", idle); !errors.Is(err, store.ErrSessionRevoked) {
 		t.Fatalf("HLS izlemesi reddedilmeli, gelen: %v", err)
 	}
 }
@@ -790,18 +791,18 @@ func TestKickFailureOnDeleteIsRetriedLater(t *testing.T) {
 	ctx := context.Background()
 	ch := tenant.channel("K")
 	v := tenant.viewer("izleyici1")
-	must(f.store.OpenTSSession(ctx, v.ID, ch.ID, "izleyen-1", "1.1.1.1", idle))
+	must(f.store.OpenTSSession(ctx, testdb.LocalEdge(f.t), v.ID, ch.ID, "izleyen-1", "1.1.1.1", idle))
 
 	f.ts.KickErr = errors.New("SRS yanıt vermiyor")
 	tenant.want(tenant.delete(fmt.Sprintf("/api/tenant/viewers/%d", v.ID)), http.StatusNoContent)
-	if got := must(f.store.PendingKicks(ctx, "ts")); fmt.Sprint(got) != "[izleyen-1]" {
+	if got := must(f.store.PendingEdgeKicks(ctx, testdb.LocalEdge(f.t))); fmt.Sprint(got) != "[izleyen-1]" {
 		t.Fatalf("kesilemeyen bağlantı kuyrukta kalmalı: %v", got)
 	}
 	f.ts.KickErr = nil
 	if err := f.sessions.EnforceOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if got := must(f.store.PendingKicks(ctx, "ts")); len(got) != 0 {
+	if got := must(f.store.PendingEdgeKicks(ctx, testdb.LocalEdge(f.t))); len(got) != 0 {
 		t.Fatalf("sonraki geçişte kesilmeli: %v", got)
 	}
 	if f.ts.Kicked() != "[izleyen-1 izleyen-1]" {

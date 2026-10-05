@@ -48,6 +48,12 @@ func url() string {
 	return defaultURL
 }
 
+// LocalEdge, göçle oluşan yerel edge'in numarasını döner.
+func LocalEdge(t *testing.T) int64 {
+	t.Helper()
+	return int64(Count(t, `SELECT id FROM edges WHERE builtin`))
+}
+
 const defaultURL = "postgres://streamhub:streamhub@localhost:5432/streamhub_test?sslmode=disable"
 
 func New(t *testing.T) *store.Store {
@@ -71,6 +77,11 @@ func New(t *testing.T) *store.Store {
 	defer conn.Close(ctx)
 	if _, err := conn.Exec(ctx, `TRUNCATE pending_kicks, panel_sessions, admins, sessions, viewers, channels, categories, tenants RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("tablolar boşaltılamadı: %v", err)
+	}
+	// Yerel edge göçle oluşur ve kalır; uzak edge'ler silinir.
+	if _, err := conn.Exec(ctx, `DELETE FROM edges WHERE NOT builtin;
+		UPDATE edges SET name = 'Yerel', ts_base_url = '', hls_base_url = '', weight = 100, enabled = true, last_seen_at = NULL`); err != nil {
+		t.Fatalf("edge kayıtları sıfırlanamadı: %v", err)
 	}
 	return s
 }
