@@ -267,14 +267,14 @@ func TestViewerManagementIsTenantScoped(t *testing.T) {
 	if len(list) != 1 || list[0].ID != f.viewerA || list[0].Password != "pa" {
 		t.Fatalf("yalnızca A'nın izleyicileri listelenmeli: %+v", list)
 	}
-	if err := s.UpdateViewer(ctx, f.a, f.viewerA, "suspended", &exp, 3); err != nil {
+	if err := s.UpdateViewer(ctx, f.a, f.viewerA, store.ViewerUpdate{Status: ptr("suspended"), SetExpiry: true, ExpiresAt: &exp, MaxConnections: ptr(3)}); err != nil {
 		t.Fatal(err)
 	}
 	v := must(s.ViewerOfTenant(ctx, f.a, f.viewerA))
 	if v.Status != "suspended" || v.MaxConnections != 3 || v.ExpiresAt == nil || !v.ExpiresAt.Equal(exp) {
 		t.Fatalf("izleyici güncellenmeli: %+v", v)
 	}
-	if err := s.UpdateViewer(ctx, f.a, f.viewerA, "active", nil, 1); err != nil {
+	if err := s.UpdateViewer(ctx, f.a, f.viewerA, store.ViewerUpdate{Status: ptr("active"), SetExpiry: true, MaxConnections: ptr(1)}); err != nil {
 		t.Fatal(err)
 	}
 	if must(s.ViewerOfTenant(ctx, f.a, f.viewerA)).ExpiresAt != nil {
@@ -289,7 +289,7 @@ func TestViewerManagementIsTenantScoped(t *testing.T) {
 
 	_, err := s.ViewerOfTenant(ctx, f.a, f.viewerB)
 	notFound(t, "ViewerOfTenant", err)
-	notFound(t, "UpdateViewer", s.UpdateViewer(ctx, f.a, f.viewerB, "suspended", nil, 9))
+	notFound(t, "UpdateViewer", s.UpdateViewer(ctx, f.a, f.viewerB, store.ViewerUpdate{Status: ptr("suspended"), MaxConnections: ptr(9)}))
 	notFound(t, "SetViewerPassword", s.SetViewerPassword(ctx, f.a, f.viewerB, "x"))
 	notFound(t, "DeleteViewer", s.DeleteViewer(ctx, f.a, f.viewerB))
 	if b := must(s.ViewerByID(ctx, f.viewerB)); b.Status != "active" || b.Password != "pb" || b.MaxConnections != 1 {
@@ -328,25 +328,4 @@ func TestActiveSessionsByTenantAndConnections(t *testing.T) {
 	if got != "ali A1 ts 1.1.1.1 | ayse hls 2.2.2.2" {
 		t.Fatalf("oturum listesi: %s", got)
 	}
-
-	pub, viewers := must2(s.ChannelConnections(ctx, f.chanA))
-	if pub != "yayinci-a" || fmt.Sprint(viewers) != "[t1]" {
-		t.Fatalf("kanal bağlantıları: %q %v", pub, viewers)
-	}
-	if pub, viewers := must2(s.ChannelConnections(ctx, f.chanB)); pub != "" || fmt.Sprint(viewers) != "[t9]" {
-		t.Fatalf("yayında olmayan kanal: %q %v", pub, viewers)
-	}
-	if ids := must(s.ViewerTSConnections(ctx, f.viewerA)); fmt.Sprint(ids) != "[t1]" {
-		t.Fatalf("izleyici bağlantıları: %v", ids)
-	}
-	if ids := must(s.ViewerTSConnections(ctx, second)); len(ids) != 0 {
-		t.Fatalf("HLS oturumu SRS bağlantısı değildir: %v", ids)
-	}
-}
-
-func must2[A, B any](a A, b B, err error) (A, B) {
-	if err != nil {
-		panic(err)
-	}
-	return a, b
 }

@@ -298,7 +298,7 @@ export function Viewers() {
     const status = v.status === "active" ? "suspended" : "active";
     if (status === "suspended" && !window.confirm(`"${v.username}" askıya alınsın mı? Süren izlemesi birkaç saniye içinde kesilir.`)) return;
     void action.run(async () => {
-      await api.patch(`/api/tenant/viewers/${v.id}`, { status, expires_at: v.expires_at, max_connections: v.max_connections });
+      await api.patch(`/api/tenant/viewers/${v.id}`, { status });
       await viewers.reload();
     });
   };
@@ -447,7 +447,7 @@ function CreateViewer({ onCreated }: { onCreated: (v: Viewer) => void }) {
 function ViewerInfo({ viewer, server, onClose, onChanged }: { viewer: Viewer; server: string; onClose: () => void; onChanged: () => void }) {
   const action = useAction();
   const regenerate = () => {
-    if (!window.confirm(`"${viewer.username}" için yeni şifre üretilsin mi? İzleyicinin oynatıcısına yeni şifreyi girmesi gerekir.`)) return;
+    if (!window.confirm(`"${viewer.username}" için yeni şifre üretilsin mi? Süren izlemesi kesilir ve oynatıcısına yeni şifreyi girmesi gerekir.`)) return;
     void action.run(async () => {
       await api.post(`/api/tenant/viewers/${viewer.id}/regenerate-password`);
       onChanged();
@@ -477,7 +477,6 @@ function EditViewer({ viewer, onClose, onSaved }: { viewer: Viewer; onClose: () 
     e.preventDefault();
     void action.run(async () => {
       await api.patch(`/api/tenant/viewers/${viewer.id}`, {
-        status: viewer.status,
         max_connections: maxConnections,
         expires_at: fromLocalInput(expires),
       });

@@ -3,6 +3,7 @@ package panelapi_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -27,9 +28,10 @@ const (
 )
 
 type fixture struct {
-	t      *testing.T
-	store  *store.Store
-	mux    *http.ServeMux
+	t        *testing.T
+	store    *store.Store
+	sessions *session.Manager
+	mux      *http.ServeMux
 	ts     *sessiontest.FakeSRS // .ts dağıtıcısı
 	origin *sessiontest.FakeSRS
 }
@@ -46,9 +48,9 @@ func setup(t *testing.T) *fixture { return setupWith(t, false) }
 func setupWith(t *testing.T, secureCookie bool) *fixture {
 	f := &fixture{t: t, store: testdb.New(t), mux: http.NewServeMux(), ts: &sessiontest.FakeSRS{}, origin: &sessiontest.FakeSRS{}}
 	must(f.store.CreateAdmin(context.Background(), adminEmail, must(passhash.Hash(adminPassword))))
-	sessions := session.New(f.store, f.ts, f.origin, idle, 6*time.Hour)
+	f.sessions = session.New(f.store, f.ts, f.origin, idle, 6*time.Hour)
 	limiter := ratelimit.New(maxLoginFails, time.Minute, time.Now)
-	panelapi.New(f.store, sessions, limiter, panelapi.Config{
+	panelapi.New(f.store, f.sessions, limiter, panelapi.Config{
 		SessionTTL:    time.Hour,
 		SecureCookie:  secureCookie,
 		IngestURL:     "rtmp://yayin.example.com/live",
@@ -232,8 +234,15 @@ func TestLoginSetsAHardenedCookie(t *testing.T) {
 func TestLoginFailuresLookTheSame(t *testing.T) {
 	f := setup(t)
 	f.newTenant("A", "a@example.com")
+	_, suspended, _ := f.newTenant("Askıda", "askida@example.com")
+	if err := f.store.SetTenantStatus(context.Background(), suspended.ID, "suspended"); err != nil {
+		t.Fatal(err)
+	}
 	var bodies []string
-	for _, creds := range [][2]string{{adminEmail, "yanlis-sifre-123"}, {"a@example.com", "yanlis-sifre-123"}, {"yok@example.com", "herhangi-bir-sey"}, {"", ""}} {
+	for _, creds := range [][2]string{
+		{adminEmail, "yanlis-sifre-123"}, {"a@example.com", "yanlis-sifre-123"}, {"askida@example.com", "yanlis-sifre-123"},
+		{"yok@example.com", "herhangi-bir-sey"}, {"", ""},
+	} {
 		c := f.anon()
 		c.remote = fmt.Sprintf("198.51.100.%d:1", len(bodies)+1)
 		r := c.want(c.post("/api/login", map[string]string{"email": creds[0], "password": creds[1]}), http.StatusUnauthorized)
@@ -315,6 +324,13 @@ func TestRolesAreSeparated(t *testing.T) {
 func TestChangesRequireThePanelHeader(t *testing.T) {
 	f := setup(t)
 	tenant, _, _ := f.newTenant("A", "a@example.com")
+	stranger := f.anon()
+	stranger.noCSRF = true
+	stranger.want(stranger.post("/api/login", map[string]string{"email": adminEmail, "password": adminPassword}), http.StatusForbidden)
+	if stranger.cookie != nil {
+		t.Fatal("başlıksız giriş isteği oturum açmamalı")
+	}
+
 	tenant.noCSRF = true
 	tenant.want(tenant.post("/api/tenant/channels", map[string]any{"name": "K"}), http.StatusForbidden)
 	tenant.want(tenant.post("/api/logout", nil), http.StatusForbidden)
@@ -420,13 +436,13 @@ func TestSuspendedTenantIsLockedOut(t *testing.T) {
 	path := fmt.Sprintf("/api/admin/tenants/%d", info.ID)
 
 	admin.want(admin.patch(path, map[string]any{"status": "suspended"}), http.StatusOK)
-	if r := tenant.get("/api/tenant/channels"); r.code != http.StatusUnauthorized && r.code != http.StatusForbidden {
-		t.Fatalf("askıdaki yayıncının oturumu çalışmamalı: durum %d", r.code)
-	}
+	// Askıya alma panel oturumlarını siler; yeniden etkinleştirilince eski çerez geri gelmez.
+	tenant.want(tenant.get("/api/tenant/channels"), http.StatusUnauthorized)
 	anon := f.anon()
 	anon.want(anon.post("/api/login", map[string]string{"email": "a@example.com", "password": password}), http.StatusForbidden)
 
 	admin.want(admin.patch(path, map[string]any{"status": "active"}), http.StatusOK)
+	tenant.want(tenant.get("/api/tenant/channels"), http.StatusUnauthorized)
 	f.login("a@example.com", password)
 }
 
@@ -612,6 +628,10 @@ func TestTenantsCannotTouchEachOthersRecords(t *testing.T) {
 	b.want(b.post("/api/tenant/categories", map[string]string{"name": "B-kategori"}), http.StatusCreated).into(t, &cat)
 	ch := b.channel("B-kanal")
 	v := b.viewer("b_izleyici")
+	// B'nin kanalı yayında ve izleniyor: saldırılar bu bağlantılara da dokunamamalı.
+	bg := context.Background()
+	must(f.store.MarkLive(bg, ch.ID, "b-yayinci"))
+	must(f.store.OpenTSSession(bg, v.ID, ch.ID, "b-izleyen", "9.9.9.9", idle))
 
 	attacks := []response{
 		a.patch(fmt.Sprintf("/api/tenant/channels/%d", ch.ID), map[string]any{"name": "ele geçirildi"}),
@@ -653,7 +673,139 @@ func TestTenantsCannotTouchEachOthersRecords(t *testing.T) {
 		t.Fatalf("B'nin kategorisi değişmemeli: %+v", cats)
 	}
 	if f.origin.Kicked() != "[]" || f.ts.Kicked() != "[]" {
-		t.Fatal("reddedilen istekler hiçbir bağlantıyı kesmemeli")
+		t.Fatalf("reddedilen istekler hiçbir bağlantıyı kesmemeli: origin=%s ts=%s", f.origin.Kicked(), f.ts.Kicked())
+	}
+	if n := testdb.Count(t, `SELECT count(*) FROM pending_kicks`); n != 0 {
+		t.Fatalf("reddedilen istekler kesme kuyruğuna kayıt eklememeli: %d", n)
+	}
+	if n := must(f.store.ActiveSessionCount(ctx, v.ID, idle)); n != 1 {
+		t.Fatalf("B'nin izleyicisinin oturumu sürmeli: %d", n)
+	}
+}
+
+func TestAdminPasswordChangeEndsOtherAdminSessions(t *testing.T) {
+	f := setup(t)
+	first, second := f.admin(), f.admin()
+	first.want(first.post("/api/password", map[string]string{"current": adminPassword, "new": "yeni-yonetici-sifresi"}), http.StatusNoContent)
+	first.want(first.get("/api/admin/stats"), http.StatusOK)
+	second.want(second.get("/api/admin/stats"), http.StatusUnauthorized)
+	f.login(adminEmail, "yeni-yonetici-sifresi")
+}
+
+func TestExpiredSessionIsRejected(t *testing.T) {
+	f := setup(t)
+	c := f.admin()
+	testdb.Exec(t, `UPDATE panel_sessions SET expires_at = now() - interval '1 second'`)
+	c.want(c.get("/api/me"), http.StatusUnauthorized)
+}
+
+// Mevcut şifre denemeleri de sınırlıdır: açık bir oturumu ele geçiren kişi şifreyi deneyerek bulamaz.
+func TestWrongCurrentPasswordAttemptsAreLimited(t *testing.T) {
+	f := setup(t)
+	c, _, password := f.newTenant("A", "a@example.com")
+	for i := 0; i < maxLoginFails; i++ {
+		c.want(c.post("/api/password", map[string]string{"current": "yanlis-sifre-123", "new": "yepyeni-sifre-456"}), http.StatusForbidden)
+	}
+	c.want(c.post("/api/password", map[string]string{"current": password, "new": "yepyeni-sifre-456"}), http.StatusTooManyRequests)
+	f.login("a@example.com", password)
+}
+
+// Yalnızca gönderilen alanlar değişir: bitiş tarihini düzenlemek askıdaki izleyiciyi etkinleştirmez.
+func TestViewerPatchChangesOnlyGivenFields(t *testing.T) {
+	f := setup(t)
+	tenant, _, _ := f.newTenant("A", "a@example.com")
+	v := tenant.viewer("izleyici1")
+	path := fmt.Sprintf("/api/tenant/viewers/%d", v.ID)
+	var got viewerJSON
+
+	tenant.want(tenant.patch(path, map[string]any{"status": "suspended"}), http.StatusOK).into(t, &got)
+	tenant.want(tenant.patch(path, map[string]any{"expires_at": "2031-05-06T07:08:09Z", "max_connections": 4}), http.StatusOK).into(t, &got)
+	if got.Status != "suspended" || got.MaxConnections != 4 || got.ExpiresAt == nil || *got.ExpiresAt != "2031-05-06T07:08:09Z" {
+		t.Fatalf("askı durumu korunmalı, diğer alanlar değişmeli: %+v", got)
+	}
+	tenant.want(tenant.patch(path, map[string]any{"max_connections": 2}), http.StatusOK).into(t, &got)
+	if got.ExpiresAt == nil || got.MaxConnections != 2 {
+		t.Fatalf("gönderilmeyen bitiş tarihi korunmalı: %+v", got)
+	}
+	tenant.want(tenant.patch(path, map[string]any{"expires_at": nil}), http.StatusOK).into(t, &got)
+	if got.ExpiresAt != nil || got.Status != "suspended" {
+		t.Fatalf("null bitiş tarihini kaldırmalı: %+v", got)
+	}
+}
+
+func TestCreateViewerWithExpiryAndLimit(t *testing.T) {
+	f := setup(t)
+	tenant, _, _ := f.newTenant("A", "a@example.com")
+	var v viewerJSON
+	tenant.want(tenant.post("/api/tenant/viewers", map[string]any{"username": "sureli", "max_connections": 3, "expires_at": "2031-05-06T07:08:09Z"}), http.StatusCreated).into(t, &v)
+	if v.MaxConnections != 3 || v.ExpiresAt == nil || *v.ExpiresAt != "2031-05-06T07:08:09Z" {
+		t.Fatalf("yeni izleyici: %+v", v)
+	}
+	tenant.want(tenant.post("/api/tenant/viewers", map[string]any{"username": "bozuk", "expires_at": "yarın"}), http.StatusBadRequest)
+	var list []viewerJSON
+	tenant.want(tenant.get("/api/tenant/viewers"), http.StatusOK).into(t, &list)
+	if len(list) != 1 {
+		t.Fatalf("reddedilen istek izleyici oluşturmamalı: %+v", list)
+	}
+}
+
+func TestCreateChannelWithForeignCategoryLeavesNothingBehind(t *testing.T) {
+	f := setup(t)
+	a, _, _ := f.newTenant("A", "a@example.com")
+	b, _, _ := f.newTenant("B", "b@example.com")
+	var cat idJSON
+	b.want(b.post("/api/tenant/categories", map[string]string{"name": "B-kategori"}), http.StatusCreated).into(t, &cat)
+	a.want(a.post("/api/tenant/channels", map[string]any{"name": "K", "category_id": cat.ID}), http.StatusNotFound)
+	var list []channelJSON
+	a.want(a.get("/api/tenant/channels"), http.StatusOK).into(t, &list)
+	if len(list) != 0 {
+		t.Fatalf("yarım kalmış kanal bırakılmamalı: %+v", list)
+	}
+}
+
+// Şifresi yenilenen izleyicinin süren izlemeleri kesilir: sızan şifreyle izleyen de düşer.
+func TestRegeneratingAViewerPasswordEndsRunningPlayback(t *testing.T) {
+	f := setup(t)
+	tenant, _, _ := f.newTenant("A", "a@example.com")
+	ctx := context.Background()
+	ch := tenant.channel("K")
+	v := tenant.viewer("izleyici1")
+	tenant.want(tenant.patch(fmt.Sprintf("/api/tenant/viewers/%d", v.ID), map[string]any{"max_connections": 2}), http.StatusOK)
+	must(f.store.OpenTSSession(ctx, v.ID, ch.ID, "izleyen-1", "1.1.1.1", idle))
+	must(f.store.TouchHLSSession(ctx, v.ID, ch.ID, "hls-1", "1.1.1.1", idle))
+
+	tenant.want(tenant.post(fmt.Sprintf("/api/tenant/viewers/%d/regenerate-password", v.ID), nil), http.StatusOK)
+	if f.ts.Kicked() != "[izleyen-1]" {
+		t.Fatalf(".ts izlemesi kesilmeli: %s", f.ts.Kicked())
+	}
+	if _, err := f.store.TouchHLSSession(ctx, v.ID, ch.ID, "hls-1", "1.1.1.1", idle); !errors.Is(err, store.ErrSessionRevoked) {
+		t.Fatalf("HLS izlemesi reddedilmeli, gelen: %v", err)
+	}
+}
+
+// Silme sırasında SRS'e ulaşılamazsa işlem yine tamamlanır ve bağlantı sonradan kesilir.
+func TestKickFailureOnDeleteIsRetriedLater(t *testing.T) {
+	f := setup(t)
+	tenant, _, _ := f.newTenant("A", "a@example.com")
+	ctx := context.Background()
+	ch := tenant.channel("K")
+	v := tenant.viewer("izleyici1")
+	must(f.store.OpenTSSession(ctx, v.ID, ch.ID, "izleyen-1", "1.1.1.1", idle))
+
+	f.ts.KickErr = errors.New("SRS yanıt vermiyor")
+	tenant.want(tenant.delete(fmt.Sprintf("/api/tenant/viewers/%d", v.ID)), http.StatusNoContent)
+	if got := must(f.store.PendingKicks(ctx, "ts")); fmt.Sprint(got) != "[izleyen-1]" {
+		t.Fatalf("kesilemeyen bağlantı kuyrukta kalmalı: %v", got)
+	}
+	f.ts.KickErr = nil
+	if err := f.sessions.EnforceOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := must(f.store.PendingKicks(ctx, "ts")); len(got) != 0 {
+		t.Fatalf("sonraki geçişte kesilmeli: %v", got)
+	}
+	if f.ts.Kicked() != "[izleyen-1 izleyen-1]" {
+		t.Fatalf("kesme yeniden denenmeli: %s", f.ts.Kicked())
 	}
 }
 

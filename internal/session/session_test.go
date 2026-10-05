@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"streamhub/internal/session"
+	"streamhub/internal/srsapi"
 	"streamhub/internal/store"
 	"streamhub/internal/testdb"
 )
@@ -176,6 +177,48 @@ func TestEnforceStepsAreIndependent(t *testing.T) {
 	// Yanıt vermeyen bir SRS'e aynı geçişte tekrar tekrar gidilmez.
 	if f.ts.got() != "[izleyici-0]" {
 		t.Fatalf("ilk hatadan sonra o SRS için kesme denemeleri durmalı: %s", f.ts.got())
+	}
+}
+
+// Silinen bir kanalın bağlantıları kuyrukta bekler: SRS'e ulaşılamazsa sonraki geçişte yeniden denenir.
+func TestQueuedKicksAreRetriedUntilTheySucceed(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	must(f.s.MarkLive(ctx, f.channel, "yayinci-1"))
+	ok(t, f.m.OpenTS(ctx, f.viewer, f.channel, "izleyen-1", "1.1.1.1"))
+	ok(t, f.s.DeleteChannel(ctx, f.tenant, f.channel))
+
+	f.ts.kickErr = errors.New("SRS yanıt vermiyor")
+	f.origin.kickErr = errors.New("SRS yanıt vermiyor")
+	f.m.Flush(ctx)
+	if got := fmt.Sprint(must(f.s.PendingKicks(ctx, "origin")), must(f.s.PendingKicks(ctx, "ts"))); got != "[yayinci-1] [izleyen-1]" {
+		t.Fatalf("kesilemeyen bağlantılar kuyrukta kalmalı: %s", got)
+	}
+
+	f.ts.kickErr, f.origin.kickErr = nil, nil
+	ok(t, f.m.EnforceOnce(ctx))
+	if f.origin.got() != "[yayinci-1 yayinci-1]" || f.ts.got() != "[izleyen-1 izleyen-1]" {
+		t.Fatalf("yeniden denenmeli: origin=%s ts=%s", f.origin.got(), f.ts.got())
+	}
+	if got := fmt.Sprint(must(f.s.PendingKicks(ctx, "origin")), must(f.s.PendingKicks(ctx, "ts"))); got != "[] []" {
+		t.Fatalf("kesilen bağlantılar kuyruktan çıkmalı: %s", got)
+	}
+	ok(t, f.m.EnforceOnce(ctx))
+	if f.origin.got() != "[yayinci-1 yayinci-1]" {
+		t.Fatalf("kesilmiş bağlantı yeniden kesilmemeli: %s", f.origin.got())
+	}
+}
+
+// SRS "böyle bir bağlantı yok" derse iş bitmiştir; kayıt kuyrukta kalıp sonsuza dek denenmez.
+func TestQueuedKickForAGoneConnectionIsResolved(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	must(f.s.MarkLive(ctx, f.channel, "yayinci-1"))
+	ok(t, f.s.DeleteChannel(ctx, f.tenant, f.channel))
+	f.origin.kickErr = &srsapi.StatusError{Op: "DELETE", Code: 2049}
+	f.m.Flush(ctx)
+	if got := must(f.s.PendingKicks(ctx, "origin")); len(got) != 0 {
+		t.Fatalf("var olmayan bağlantı kuyruktan çıkmalı: %v", got)
 	}
 }
 

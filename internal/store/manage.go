@@ -27,14 +27,65 @@ func (s *Store) UpdateChannel(ctx context.Context, tenantID, id int64, name, log
 		tenantID, id, name, logoURL, categoryID)
 }
 
+// SetChannelSecret, yayın anahtarını değiştirir. Kanal yayındaysa eski anahtarla süren yayın
+// kesilmek üzere kuyruğa alınır.
 func (s *Store) SetChannelSecret(ctx context.Context, tenantID, id int64, secret string) error {
-	return s.one(ctx, `UPDATE channels SET stream_secret = $3 WHERE id = $2 AND tenant_id = $1`, tenantID, id, secret)
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE channels SET stream_secret = $3 WHERE id = $2 AND tenant_id = $1`, tenantID, id, secret)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+		return queuePublisher(ctx, tx, id)
+	})
 }
 
-// DeleteChannel, kanalı ve oturum kayıtlarını siler. Süren yayın ve izlemeler ayrıca kesilmelidir
-// (bkz. session.Manager.EndChannel).
+// DeleteChannel, kanalı ve oturum kayıtlarını siler; süren yayını ve .ts izlemelerini aynı işlem
+// içinde kesilmek üzere kuyruğa alır (bkz. PendingKicks). Kayıt önce silindiği için araya giren
+// yeni bir bağlantı yetkilendirilemez.
 func (s *Store) DeleteChannel(ctx context.Context, tenantID, id int64) error {
-	return s.one(ctx, `DELETE FROM channels WHERE id = $2 AND tenant_id = $1`, tenantID, id)
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		var exists bool
+		err := tx.QueryRow(ctx, `SELECT true FROM channels WHERE id = $2 AND tenant_id = $1 FOR UPDATE`, tenantID, id).Scan(&exists)
+		if err != nil {
+			return notFound(err)
+		}
+		if err := queuePublisher(ctx, tx, id); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO pending_kicks (target, client_id)
+			SELECT 'ts', session_key FROM sessions WHERE kind = 'ts' AND channel_id = $1
+			ON CONFLICT DO NOTHING`, id); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `DELETE FROM channels WHERE id = $1`, id)
+		return err
+	})
+}
+
+// queuePublisher, kanal yayındaysa yayıncı bağlantısını kesilmek üzere kuyruğa alır.
+func queuePublisher(ctx context.Context, tx pgx.Tx, channelID int64) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO pending_kicks (target, client_id)
+		SELECT 'origin', publisher_client_id FROM channels
+		WHERE id = $1 AND live AND publisher_client_id IS NOT NULL
+		ON CONFLICT DO NOTHING`, channelID)
+	return err
+}
+
+func (s *Store) inTx(ctx context.Context, fn func(pgx.Tx) error) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := fn(tx); err != nil {
+		return conflict(err)
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Store) ViewersByTenant(ctx context.Context, tenantID int64) ([]Viewer, error) {
@@ -49,20 +100,59 @@ func (s *Store) ViewerOfTenant(ctx context.Context, tenantID, id int64) (Viewer,
 	return scanViewer(s.pool.QueryRow(ctx, viewerSelect+`WHERE v.id = $2 AND v.tenant_id = $1`, tenantID, id))
 }
 
-func (s *Store) UpdateViewer(ctx context.Context, tenantID, id int64, status string, expiresAt *time.Time, maxConnections int) error {
+// ViewerUpdate, bir izleyicide değiştirilecek alanlardır; nil alanlara dokunulmaz.
+// Bitiş tarihi nil "süresiz" anlamına geldiği için ayrıca SetExpiry ile işaretlenir.
+type ViewerUpdate struct {
+	Status         *string
+	MaxConnections *int
+	SetExpiry      bool
+	ExpiresAt      *time.Time
+}
+
+func (s *Store) UpdateViewer(ctx context.Context, tenantID, id int64, u ViewerUpdate) error {
 	return s.one(ctx, `
-		UPDATE viewers SET status = $3, expires_at = $4, max_connections = $5
-		WHERE id = $2 AND tenant_id = $1`, tenantID, id, status, expiresAt, maxConnections)
+		UPDATE viewers SET
+			status          = coalesce($3, status),
+			max_connections = coalesce($4, max_connections),
+			expires_at      = CASE WHEN $5 THEN $6 ELSE expires_at END
+		WHERE id = $2 AND tenant_id = $1`, tenantID, id, u.Status, u.MaxConnections, u.SetExpiry, u.ExpiresAt)
 }
 
+// SetViewerPassword, şifreyi değiştirir ve izleyicinin süren tüm izlemelerini sonlandırır; böylece
+// sızan eski şifreyle başlamış izlemeler de kesilir (.ts bağlantılarını uygulama döngüsü keser,
+// HLS geçidi sonlandırılmış oturumu reddeder).
 func (s *Store) SetViewerPassword(ctx context.Context, tenantID, id int64, password string) error {
-	return s.one(ctx, `UPDATE viewers SET password = $3 WHERE id = $2 AND tenant_id = $1`, tenantID, id, password)
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE viewers SET password = $3 WHERE id = $2 AND tenant_id = $1`, tenantID, id, password)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+		_, err = tx.Exec(ctx, `UPDATE sessions SET revoked = true WHERE viewer_id = $1 AND NOT revoked`, id)
+		return err
+	})
 }
 
-// DeleteViewer, izleyiciyi ve oturum kayıtlarını siler. Süren izlemeler ayrıca kesilmelidir
-// (bkz. session.Manager.EndViewer).
+// DeleteViewer, izleyiciyi ve oturum kayıtlarını siler; süren .ts izlemelerini aynı işlem içinde
+// kesilmek üzere kuyruğa alır.
 func (s *Store) DeleteViewer(ctx context.Context, tenantID, id int64) error {
-	return s.one(ctx, `DELETE FROM viewers WHERE id = $2 AND tenant_id = $1`, tenantID, id)
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		var exists bool
+		err := tx.QueryRow(ctx, `SELECT true FROM viewers WHERE id = $2 AND tenant_id = $1 FOR UPDATE`, tenantID, id).Scan(&exists)
+		if err != nil {
+			return notFound(err)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO pending_kicks (target, client_id)
+			SELECT 'ts', session_key FROM sessions WHERE kind = 'ts' AND viewer_id = $1
+			ON CONFLICT DO NOTHING`, id); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `DELETE FROM viewers WHERE id = $1`, id)
+		return err
+	})
 }
 
 // SessionInfo, yayıncı panelinde gösterilen süren bir izlemedir.
@@ -90,20 +180,22 @@ func (s *Store) ActiveSessionsByTenant(ctx context.Context, tenantID int64, idle
 	return pgx.CollectRows(rows, pgx.RowToStructByPos[SessionInfo])
 }
 
-// ChannelConnections, bir kanalın SRS'teki bağlantılarını döner: yayıncının origin'deki bağlantı
-// kimliği (yayında değilse boş) ve .ts izleyicilerinin dağıtıcıdaki bağlantı kimlikleri.
-func (s *Store) ChannelConnections(ctx context.Context, channelID int64) (publisher string, tsViewers []string, err error) {
-	err = s.pool.QueryRow(ctx, `
-		SELECT CASE WHEN live THEN coalesce(publisher_client_id, '') ELSE '' END
-		FROM channels WHERE id = $1`, channelID).Scan(&publisher)
-	if err != nil {
-		return "", nil, notFound(err)
-	}
-	tsViewers, err = s.strings(ctx, `SELECT session_key FROM sessions WHERE kind = 'ts' AND channel_id = $1 ORDER BY session_key`, channelID)
-	return publisher, tsViewers, err
+// --- kesilmeyi bekleyen bağlantılar ---
+
+// PendingKicks, verilen SRS'te ("origin" veya "ts") kesilmeyi bekleyen bağlantı kimliklerini döner.
+func (s *Store) PendingKicks(ctx context.Context, target string) ([]string, error) {
+	return s.strings(ctx, `SELECT client_id FROM pending_kicks WHERE target = $1 ORDER BY client_id`, target)
 }
 
-// ViewerTSConnections, bir izleyicinin .ts dağıtıcısındaki bağlantı kimliklerini döner.
-func (s *Store) ViewerTSConnections(ctx context.Context, viewerID int64) ([]string, error) {
-	return s.strings(ctx, `SELECT session_key FROM sessions WHERE kind = 'ts' AND viewer_id = $1 ORDER BY session_key`, viewerID)
+// ResolveKick, kesilen (veya SRS'te artık bulunmayan) bağlantıyı kuyruktan çıkarır.
+func (s *Store) ResolveKick(ctx context.Context, target, clientID string) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM pending_kicks WHERE target = $1 AND client_id = $2`, target, clientID)
+	return err
+}
+
+// DeleteStaleKicks, olderThan süresinden eski kayıtları siler; o kadar süredir kesilemeyen bir
+// bağlantı büyük olasılıkla SRS yeniden başladığı için zaten yoktur.
+func (s *Store) DeleteStaleKicks(ctx context.Context, olderThan time.Duration) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM pending_kicks WHERE created_at < now() - make_interval(secs => $1)`, olderThan.Seconds())
+	return tag.RowsAffected(), err
 }

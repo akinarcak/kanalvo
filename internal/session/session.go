@@ -12,15 +12,20 @@ import (
 	"streamhub/internal/store"
 )
 
-// kickTimeout, bir oturum açılırken yerinden edilen bağlantıyı kesmek için beklenen en uzun süredir.
-// Kesme başarısız olursa Enforce döngüsü yeniden dener.
-const kickTimeout = 2 * time.Second
-
-// reconcileGrace, yeni açılmış bir .ts oturumunun SRS listesinde görünmesi için tanınan süredir.
-const reconcileGrace = 10 * time.Second
-
-// passTimeout, tek bir uygulama geçişinin en uzun süresidir.
-const passTimeout = 20 * time.Second
+const (
+	// kickTimeout, bir istek sırasında tek bir bağlantıyı kesmek için beklenen en uzun süredir.
+	// Kesme başarısız olursa Enforce döngüsü yeniden dener.
+	kickTimeout = 2 * time.Second
+	// flushTimeout, bir panel işleminin ardından bekleyen kesmeleri hemen denemek için ayrılan süredir.
+	flushTimeout = 5 * time.Second
+	// reconcileGrace, yeni açılmış bir .ts oturumunun SRS listesinde görünmesi için tanınan süredir.
+	reconcileGrace = 10 * time.Second
+	// passTimeout, tek bir uygulama geçişinin en uzun süresidir.
+	passTimeout = 20 * time.Second
+	// staleKickAge: bu süredir kesilemeyen bir bağlantının kaydı silinir (SRS yeniden başlamış,
+	// bağlantı zaten yok olmuştur).
+	staleKickAge = time.Hour
+)
 
 // SRS, bir SRS'in yönetim API'sinin kullanılan kısmıdır (bkz. srsapi.Client).
 type SRS interface {
@@ -84,46 +89,14 @@ func (m *Manager) kickEvicted(ctx context.Context, evicted []store.Evicted) {
 	}
 }
 
-// KickPublisher, bir kanalın süren yayınını keser (ör. yayın anahtarı yenilendiğinde).
-// Kesme başarısız olursa yalnızca loglanır; çağıranın işlemi bundan etkilenmez.
-func (m *Manager) KickPublisher(ctx context.Context, channelID int64) {
-	publisher, _, err := m.store.ChannelConnections(ctx, channelID)
-	if err != nil || publisher == "" {
-		return
-	}
-	m.kickNow(ctx, m.origin, publisher)
-}
-
-// EndChannel, bir kanalın süren yayınını ve .ts izlemelerini keser (ör. kanal silinirken).
-func (m *Manager) EndChannel(ctx context.Context, channelID int64) {
-	publisher, viewers, err := m.store.ChannelConnections(ctx, channelID)
-	if err != nil {
-		return
-	}
-	if publisher != "" {
-		m.kickNow(ctx, m.origin, publisher)
-	}
-	for _, id := range viewers {
-		m.kickNow(ctx, m.ts, id)
-	}
-}
-
-// EndViewer, bir izleyicinin süren .ts izlemelerini keser (ör. izleyici silinirken).
-func (m *Manager) EndViewer(ctx context.Context, viewerID int64) {
-	ids, err := m.store.ViewerTSConnections(ctx, viewerID)
-	if err != nil {
-		return
-	}
-	for _, id := range ids {
-		m.kickNow(ctx, m.ts, id)
-	}
-}
-
-func (m *Manager) kickNow(ctx context.Context, srs SRS, id string) {
-	kickCtx, cancel := context.WithTimeout(ctx, kickTimeout)
+// Flush, kesilmeyi bekleyen bağlantıları hemen kesmeyi dener. Bir kanal veya izleyici silindikten,
+// yayın anahtarı ya da izleyici şifresi yenilendikten sonra çağrılır; böylece etkisi bir sonraki
+// döngü geçişini beklemez. İsteğin iptalinden etkilenmez; başarısız olanları Enforce döngüsü yeniden dener.
+func (m *Manager) Flush(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), flushTimeout)
 	defer cancel()
-	if err := srs.Kick(kickCtx, id); err != nil {
-		log.Printf("session: bağlantı kesilemedi: %v", err)
+	if err := m.kickPass(ctx); err != nil {
+		log.Printf("session: bekleyen bağlantılar kesilemedi, yeniden denenecek: %v", err)
 	}
 }
 
@@ -144,46 +117,67 @@ func (m *Manager) Run(ctx context.Context, interval time.Duration) {
 }
 
 // EnforceOnce:
-//  1. yerinden edilmiş veya izleme hakkını yitirmiş .ts bağlantılarını keser,
-//  2. askıdaki yayıncıların süren yayınlarını keser,
-//  3. SRS'te artık olmayan .ts oturumlarını siler,
-//  4. saklama süresi dolan HLS oturum kayıtlarını siler.
+//  1. kesilmeyi bekleyen bağlantıları (silinen kanal ve izleyiciler, yenilenen yayın anahtarları),
+//     yerinden edilmiş veya izleme hakkını yitirmiş .ts bağlantılarını ve askıdaki yayıncıların
+//     süren yayınlarını keser,
+//  2. SRS'te artık olmayan .ts oturumlarını siler,
+//  3. saklama süresi dolan HLS oturum kayıtlarını ve eskimiş kesme kayıtlarını siler.
 //
-// Origin ve .ts dağıtıcısı ayrı SRS'lerdir ve adımları birbirinden bağımsız çalışır: biri yanıt
-// vermese de diğerinin işi gecikmez. Geçişin tamamı passTimeout ile sınırlıdır.
+// Geçişin tamamı passTimeout ile sınırlıdır.
 func (m *Manager) EnforceOnce(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, passTimeout)
 	defer cancel()
+	return errors.Join(m.kickPass(ctx), m.reconcile(ctx), m.expire(ctx))
+}
 
+// kickPass, iki SRS'teki kesmeleri birbirinden bağımsız yürütür: biri yanıt vermese de diğerinin
+// işi gecikmez.
+func (m *Manager) kickPass(ctx context.Context) error {
 	var originErr error
 	originDone := make(chan struct{})
 	go func() {
 		defer close(originDone)
-		originErr = m.kickAll(ctx, m.origin, m.store.SuspendedLivePublishers)
+		originErr = errors.Join(
+			m.kickPending(ctx, m.origin, "origin"),
+			m.kickAll(ctx, m.origin, m.store.SuspendedLivePublishers, nil),
+		)
 	}()
 	tsErr := errors.Join(
-		m.kickAll(ctx, m.ts, m.store.TSSessionsToKick),
-		m.reconcile(ctx),
+		m.kickPending(ctx, m.ts, "ts"),
+		m.kickAll(ctx, m.ts, m.store.TSSessionsToKick, nil),
 	)
 	<-originDone
-	return errors.Join(tsErr, originErr, m.expire(ctx))
+	return errors.Join(tsErr, originErr)
 }
 
-// kickAll, listedeki bağlantıları keser. SRS'in reddettiği bir kesme (ör. bağlantı zaten kopmuş)
-// diğerlerini engellemez; SRS'e ulaşılamıyorsa bu geçişte o SRS için denemeler durur.
-func (m *Manager) kickAll(ctx context.Context, srs SRS, list func(context.Context) ([]string, error)) error {
+// kickPending, kuyruktaki bağlantıları keser ve kesilenleri (ya da SRS'te artık olmayanları) kuyruktan çıkarır.
+func (m *Manager) kickPending(ctx context.Context, srs SRS, target string) error {
+	list := func(ctx context.Context) ([]string, error) { return m.store.PendingKicks(ctx, target) }
+	done := func(id string) error { return m.store.ResolveKick(ctx, target, id) }
+	return m.kickAll(ctx, srs, list, done)
+}
+
+// kickAll, listedeki bağlantıları keser. SRS'in reddettiği bir kesme (bağlantı zaten kopmuş)
+// tamamlanmış sayılır; SRS'e ulaşılamıyorsa bu geçişte o SRS için denemeler durur.
+// done verilmişse tamamlanan her bağlantı için çağrılır.
+func (m *Manager) kickAll(ctx context.Context, srs SRS, list func(context.Context) ([]string, error), done func(id string) error) error {
 	ids, err := list(ctx)
 	if err != nil {
 		return err
 	}
 	var errs []error
 	for _, id := range ids {
-		err := srs.Kick(ctx, id)
+		kickCtx, cancel := context.WithTimeout(ctx, kickTimeout)
+		err := srs.Kick(kickCtx, id)
+		cancel()
 		var rejected *srsapi.StatusError
 		switch {
-		case err == nil:
-		case errors.As(err, &rejected):
-			errs = append(errs, err)
+		case err == nil, errors.As(err, &rejected):
+			if done != nil {
+				errs = append(errs, done(id))
+			} else if err != nil {
+				errs = append(errs, err)
+			}
 		default:
 			return errors.Join(append(errs, err)...)
 		}
@@ -202,6 +196,7 @@ func (m *Manager) reconcile(ctx context.Context) error {
 }
 
 func (m *Manager) expire(ctx context.Context) error {
-	_, err := m.store.DeleteExpiredHLSSessions(ctx, m.retention)
-	return err
+	_, hlsErr := m.store.DeleteExpiredHLSSessions(ctx, m.retention)
+	_, kickErr := m.store.DeleteStaleKicks(ctx, staleKickAge)
+	return errors.Join(hlsErr, kickErr)
 }

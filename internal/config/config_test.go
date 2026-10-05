@@ -36,7 +36,7 @@ func TestLoadDefaults(t *testing.T) {
 	if c.PublicBaseURL != "http://tv.example.com:8000" || c.TrustProxyHeaders || c.LoginMaxFailures != 20 || c.LoginFailureWindow != 5*time.Minute {
 		t.Fatalf("giriş ayarı varsayılanları yanlış: %+v", c)
 	}
-	if c.PanelAddr != ":8002" || c.PanelSessionTTL != 12*time.Hour || c.PanelInsecureCookie || c.IngestBaseURL != "rtmp://yayin.example.com/live" {
+	if c.PanelAddr != ":8002" || c.PanelSessionTTL != 12*time.Hour || c.PanelInsecureCookie || c.PanelTrustProxyHeaders || c.IngestBaseURL != "rtmp://yayin.example.com/live" {
 		t.Fatalf("panel ayarı varsayılanları yanlış: %+v", c)
 	}
 	if c.SRSTSAPIURL != "http://srs-ts:1985" {
@@ -74,9 +74,14 @@ func TestLoadLoginSettings(t *testing.T) {
 func TestLoadPanelSettings(t *testing.T) {
 	m := valid()
 	m["PANEL_ADDR"], m["PANEL_SESSION_TTL"], m["PANEL_INSECURE_COOKIE"] = ":9002", "30m", "true"
+	m["PANEL_TRUST_PROXY_HEADERS"] = "true"
 	c, err := Load(env(m))
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Panel ve izleyici uçları farklı vekillerin arkasında olabilir; ayarları bağımsızdır.
+	if !c.PanelTrustProxyHeaders || c.TrustProxyHeaders {
+		t.Fatalf("PANEL_TRUST_PROXY_HEADERS, TRUST_PROXY_HEADERS'tan bağımsız olmalı: %+v", c)
 	}
 	if c.PanelAddr != ":9002" || c.PanelSessionTTL != 30*time.Minute || !c.PanelInsecureCookie {
 		t.Fatalf("panel ayarları yanlış: %+v", c)

@@ -143,7 +143,7 @@ func TestPanelCreatedChannelCanBeStreamedAndWatched(t *testing.T) {
 		body, _ := fetch(streamURL, 3*188)
 		return isMPEGTS(body)
 	})
-	watching, _ := watch(streamURL)
+	watching, ended := watch(streamURL)
 	select {
 	case <-watching:
 	case <-time.After(15 * time.Second):
@@ -157,6 +157,11 @@ func TestPanelCreatedChannelCanBeStreamedAndWatched(t *testing.T) {
 
 	// İzleyici silinince süren izlemesi kesilir ve hesabı artık çalışmaz.
 	owner.call("DELETE", fmt.Sprintf("/api/tenant/viewers/%d", viewer.ID), nil, nil, http.StatusNoContent)
+	select {
+	case <-ended:
+	case <-time.After(20 * time.Second):
+		t.Fatal("silinen izleyicinin süren izlemesi kesilmedi")
+	}
 	if code, _ := probe(t, streamURL); code != http.StatusForbidden {
 		t.Fatalf("silinen izleyici 403 almalı, gelen %d", code)
 	}

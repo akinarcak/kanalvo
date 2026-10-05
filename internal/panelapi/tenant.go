@@ -1,6 +1,7 @@
 package panelapi
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -170,19 +171,12 @@ func (h *Handler) createChannel(w http.ResponseWriter, r *http.Request, a actor)
 	if !good {
 		return
 	}
-	ctx := r.Context()
-	id, err := h.store.CreateChannel(ctx, a.id, in.Name, randomHex(16))
+	id, err := h.store.CreateChannelWith(r.Context(), a.id, store.NewChannel{
+		Name: in.Name, Secret: randomHex(16), LogoURL: in.LogoURL, CategoryID: in.CategoryID,
+	})
 	if err != nil {
 		h.storeError(w, err, "")
 		return
-	}
-	if in.CategoryID != nil || in.LogoURL != "" {
-		if err := h.store.UpdateChannel(ctx, a.id, id, in.Name, in.LogoURL, in.CategoryID); err != nil {
-			// Kategori bu yayıncıya ait değil: yarım kalmış kanalı bırakma.
-			h.store.DeleteChannel(ctx, a.id, id)
-			h.storeError(w, err, "")
-			return
-		}
 	}
 	h.writeChannel(w, r, a, id, http.StatusCreated)
 }
@@ -212,23 +206,18 @@ func (h *Handler) updateChannel(w http.ResponseWriter, r *http.Request, a actor)
 	h.writeChannel(w, r, a, id, http.StatusOK)
 }
 
-// deleteChannel, kanalı siler ve süren yayını ile .ts izlemelerini keser.
+// deleteChannel, kanalı siler. Süren yayını ve .ts izlemeleri kesilmek üzere kuyruğa alınır ve
+// hemen denenir; o an kesilemeyenleri uygulama döngüsü yeniden dener.
 func (h *Handler) deleteChannel(w http.ResponseWriter, r *http.Request, a actor) {
 	id, valid := pathID(w, r)
 	if !valid {
 		return
 	}
-	ctx := r.Context()
-	// Önce sahiplik doğrulanır; başka yayıncının kanalı için hiçbir bağlantı kesilmez.
-	if _, err := h.store.ChannelOfTenant(ctx, a.id, id); err != nil {
+	if err := h.store.DeleteChannel(r.Context(), a.id, id); err != nil {
 		h.storeError(w, err, "")
 		return
 	}
-	h.sessions.EndChannel(ctx, id)
-	if err := h.store.DeleteChannel(ctx, a.id, id); err != nil {
-		h.storeError(w, err, "")
-		return
-	}
+	h.sessions.Flush(r.Context())
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -238,12 +227,11 @@ func (h *Handler) regenerateSecret(w http.ResponseWriter, r *http.Request, a act
 	if !valid {
 		return
 	}
-	ctx := r.Context()
-	if err := h.store.SetChannelSecret(ctx, a.id, id, randomHex(16)); err != nil {
+	if err := h.store.SetChannelSecret(r.Context(), a.id, id, randomHex(16)); err != nil {
 		h.storeError(w, err, "")
 		return
 	}
-	h.sessions.KickPublisher(ctx, id)
+	h.sessions.Flush(r.Context())
 	h.writeChannel(w, r, a, id, http.StatusOK)
 }
 
@@ -330,44 +318,53 @@ func (h *Handler) createViewer(w http.ResponseWriter, r *http.Request, a actor) 
 		maxConn = *in.MaxConnections
 	}
 	expires, good := parseExpiry(in.ExpiresAt)
-	if !good || maxConn < 1 || maxConn > maxViewerConnections {
+	if !good || !validConnections(maxConn) {
 		fail(w, http.StatusBadRequest, "invalid", "Bağlantı limiti 1-100 arasında, bitiş tarihi geçerli bir tarih olmalı.")
 		return
 	}
-	ctx := r.Context()
-	id, err := h.store.CreateViewer(ctx, a.id, in.Username, randomHex(8), maxConn)
+	id, err := h.store.CreateViewerWith(r.Context(), a.id, store.NewViewer{
+		Username: in.Username, Password: randomHex(8), MaxConnections: maxConn, ExpiresAt: expires,
+	})
 	if err != nil {
 		h.storeError(w, err, "Bu kullanıcı adı alınmış.")
 		return
 	}
-	if expires != nil {
-		if err := h.store.UpdateViewer(ctx, a.id, id, "active", expires, maxConn); err != nil {
-			h.storeError(w, err, "")
-			return
-		}
-	}
 	h.writeViewer(w, r, a, id, http.StatusCreated)
 }
 
+func validConnections(n int) bool { return n >= 1 && n <= maxViewerConnections }
+
+// updateViewer, yalnızca gönderilen alanları değiştirir. expires_at alanı null gönderilirse bitiş
+// tarihi kaldırılır; hiç gönderilmezse dokunulmaz.
 func (h *Handler) updateViewer(w http.ResponseWriter, r *http.Request, a actor) {
 	id, valid := pathID(w, r)
 	if !valid {
 		return
 	}
 	var in struct {
-		Status         string  `json:"status"`
-		ExpiresAt      *string `json:"expires_at"`
-		MaxConnections int     `json:"max_connections"`
+		Status         *string         `json:"status"`
+		ExpiresAt      json.RawMessage `json:"expires_at"`
+		MaxConnections *int            `json:"max_connections"`
 	}
 	if !decode(w, r, &in) {
 		return
 	}
-	expires, good := parseExpiry(in.ExpiresAt)
-	if !good || (in.Status != "active" && in.Status != "suspended") || in.MaxConnections < 1 || in.MaxConnections > maxViewerConnections {
+	update := store.ViewerUpdate{Status: in.Status, MaxConnections: in.MaxConnections}
+	good := (in.Status == nil || *in.Status == "active" || *in.Status == "suspended") &&
+		(in.MaxConnections == nil || validConnections(*in.MaxConnections))
+	if in.ExpiresAt != nil {
+		var raw *string
+		if err := json.Unmarshal(in.ExpiresAt, &raw); err != nil {
+			good = false
+		} else if update.ExpiresAt, good = parseExpiryIf(good, raw); good {
+			update.SetExpiry = true
+		}
+	}
+	if !good {
 		fail(w, http.StatusBadRequest, "invalid", "Durum, bağlantı limiti (1-100) veya bitiş tarihi geçersiz.")
 		return
 	}
-	if err := h.store.UpdateViewer(r.Context(), a.id, id, in.Status, expires, in.MaxConnections); err != nil {
+	if err := h.store.UpdateViewer(r.Context(), a.id, id, update); err != nil {
 		h.storeError(w, err, "")
 		return
 	}
@@ -375,25 +372,29 @@ func (h *Handler) updateViewer(w http.ResponseWriter, r *http.Request, a actor) 
 	h.writeViewer(w, r, a, id, http.StatusOK)
 }
 
-// deleteViewer, izleyiciyi siler ve süren .ts izlemelerini keser.
+// parseExpiryIf, önceki denetimler geçtiyse bitiş tarihini çözer.
+func parseExpiryIf(good bool, raw *string) (*time.Time, bool) {
+	if !good {
+		return nil, false
+	}
+	return parseExpiry(raw)
+}
+
+// deleteViewer, izleyiciyi siler. Süren .ts izlemeleri kesilmek üzere kuyruğa alınır ve hemen denenir.
 func (h *Handler) deleteViewer(w http.ResponseWriter, r *http.Request, a actor) {
 	id, valid := pathID(w, r)
 	if !valid {
 		return
 	}
-	ctx := r.Context()
-	if _, err := h.store.ViewerOfTenant(ctx, a.id, id); err != nil {
+	if err := h.store.DeleteViewer(r.Context(), a.id, id); err != nil {
 		h.storeError(w, err, "")
 		return
 	}
-	h.sessions.EndViewer(ctx, id)
-	if err := h.store.DeleteViewer(ctx, a.id, id); err != nil {
-		h.storeError(w, err, "")
-		return
-	}
+	h.sessions.Flush(r.Context())
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// regeneratePassword, izleyiciye yeni bir şifre verir ve süren izlemelerini sonlandırır.
 func (h *Handler) regeneratePassword(w http.ResponseWriter, r *http.Request, a actor) {
 	id, valid := pathID(w, r)
 	if !valid {
@@ -403,6 +404,7 @@ func (h *Handler) regeneratePassword(w http.ResponseWriter, r *http.Request, a a
 		h.storeError(w, err, "")
 		return
 	}
+	h.sessions.Flush(r.Context())
 	h.writeViewer(w, r, a, id, http.StatusOK)
 }
 

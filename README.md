@@ -29,8 +29,12 @@ docker compose exec -T api streamhub create-admin siz@ornek.com
 - **Yayıncı** kendi kanallarını, kategorilerini ve izleyicilerini yönetir; OBS ayarlarını ve izleyicinin
   giriş bilgilerini kopyalar; süren izlemeleri görür.
 
-Sunucuda paneli (8002) yalnızca HTTPS sunan bir vekilin arkasından yayınlayın ve `.env` içindeki
-`PANEL_INSECURE_COOKIE` satırını silin; aksi halde giriş çerezi şifresiz bağlantıdan da gönderilir.
+Sunucuda paneli (8002) yalnızca HTTPS sunan bir vekilin arkasından yayınlayın ve `.env` içinde:
+
+- `PANEL_INSECURE_COOKIE` satırını silin; aksi halde giriş çerezi şifresiz bağlantıdan da gönderilir.
+- `PANEL_TRUST_PROXY_HEADERS=true` yapın; aksi halde tüm girişler vekilin adresinden geliyor görünür ve
+  birinin 20 hatalı girişi herkesi panelin dışında bırakır. Bu ayar izleyici uçlarının
+  `TRUST_PROXY_HEADERS` ayarından bağımsızdır.
 
 Arayüzün kaynağı `web/` klasöründedir ve Docker imajı oluşturulurken derlenir. Arayüz üzerinde
 çalışırken `cd web && npm install && npm run dev` ile geliştirme sunucusunu açabilirsiniz; API
@@ -87,6 +91,7 @@ Telefondaki veya televizyondaki bir oynatıcıdan denemek için `.env` içindeki
 | `INGEST_BASE_URL` | Yayıncıların OBS'e yazacağı sunucu adresi; panelde gösterilir | zorunlu |
 | `PANEL_SESSION_TTL` | Panel oturumunun ömrü | 12h |
 | `PANEL_INSECURE_COOKIE` | Panel çerezinin HTTP üzerinden de gönderilmesine izin verir; yalnızca yerel geliştirme için | false |
+| `PANEL_TRUST_PROXY_HEADERS` | Panel isteklerinde istemci IP'sini `X-Forwarded-For` başlığından alır; panel vekil arkasındaysa açın | false |
 
 `.env.example` içindeki değerler yalnızca yerel geliştirme içindir; sunucuda `TOKEN_KEY` ve
 `HOOK_SECRET` için yeni rastgele değerler üretin ve `EDGE_*` adreslerini dış alan adınıza göre ayarlayın.

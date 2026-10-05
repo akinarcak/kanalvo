@@ -11,6 +11,8 @@ import (
 type FakeSRS struct {
 	mu      sync.Mutex
 	Clients []string
+	// KickErr verilirse her kesme isteği bu hatayla başarısız olur (istek yine de kaydedilir).
+	KickErr error
 	kicked  []string
 }
 
@@ -24,7 +26,7 @@ func (f *FakeSRS) Kick(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.kicked = append(f.kicked, id)
-	return nil
+	return f.KickErr
 }
 
 // Kicked, kesilmesi istenen bağlantıları "[a b]" biçiminde döner.

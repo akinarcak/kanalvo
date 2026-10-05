@@ -69,7 +69,7 @@ func New(t *testing.T) *store.Store {
 		t.Fatal(err)
 	}
 	defer conn.Close(ctx)
-	if _, err := conn.Exec(ctx, `TRUNCATE panel_sessions, admins, sessions, viewers, channels, categories, tenants RESTART IDENTITY CASCADE`); err != nil {
+	if _, err := conn.Exec(ctx, `TRUNCATE pending_kicks, panel_sessions, admins, sessions, viewers, channels, categories, tenants RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("tablolar boşaltılamadı: %v", err)
 	}
 	return s

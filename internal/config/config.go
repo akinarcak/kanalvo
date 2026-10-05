@@ -20,6 +20,11 @@ type Config struct {
 	// PanelInsecureCookie, panel çerezinin HTTP üzerinden de gönderilmesine izin verir.
 	// Yalnızca yerel geliştirmede açılır.
 	PanelInsecureCookie bool
+	// PanelTrustProxyHeaders, panel isteklerinde istemci IP'sinin X-Forwarded-For başlığından
+	// alınmasını sağlar. Panel bir HTTPS vekilinin arkasındaysa açılmalıdır; aksi halde tüm
+	// girişler vekilin adresinden geliyor görünür ve hatalı giriş sınırı herkesi birden engeller.
+	// İzleyici uçlarının ayarından (TrustProxyHeaders) bağımsızdır.
+	PanelTrustProxyHeaders bool
 	// IngestBaseURL, yayıncıların OBS'e yazacağı sunucu adresidir (ör. rtmp://yayin.example.com/live).
 	IngestBaseURL string
 	DatabaseURL string
@@ -103,7 +108,11 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 		c.LoginMaxFailures = n
 	}
-	for name, dst := range map[string]*bool{"TRUST_PROXY_HEADERS": &c.TrustProxyHeaders, "PANEL_INSECURE_COOKIE": &c.PanelInsecureCookie} {
+	for name, dst := range map[string]*bool{
+		"TRUST_PROXY_HEADERS":       &c.TrustProxyHeaders,
+		"PANEL_INSECURE_COOKIE":     &c.PanelInsecureCookie,
+		"PANEL_TRUST_PROXY_HEADERS": &c.PanelTrustProxyHeaders,
+	} {
 		v := getenv(name)
 		if v == "" {
 			continue

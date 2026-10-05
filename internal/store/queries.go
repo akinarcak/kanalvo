@@ -19,11 +19,27 @@ func (s *Store) SetTenantStatus(ctx context.Context, id int64, status string) er
 	return err
 }
 
-// CreateChannel, yayıncının kanal kotası doluysa ErrQuotaExceeded döner.
+// NewChannel, oluşturulacak kanalın alanlarıdır.
+type NewChannel struct {
+	Name       string
+	Secret     string
+	LogoURL    string
+	CategoryID *int64 // verilmişse aynı yayıncıya ait olmalıdır
+}
+
 func (s *Store) CreateChannel(ctx context.Context, tenantID int64, name, secret string) (int64, error) {
-	return s.insertWithinQuota(ctx, tenantID, "channels", "max_channels",
-		`INSERT INTO channels (tenant_id, name, stream_secret) VALUES ($1, $2, $3) RETURNING id`,
-		tenantID, name, secret)
+	return s.CreateChannelWith(ctx, tenantID, NewChannel{Name: name, Secret: secret})
+}
+
+// CreateChannelWith, kanalı tek adımda oluşturur. Kota doluysa ErrQuotaExceeded, kategori bu
+// yayıncıya ait değilse ErrNotFound döner; ikisinde de hiçbir kayıt oluşmaz.
+func (s *Store) CreateChannelWith(ctx context.Context, tenantID int64, c NewChannel) (int64, error) {
+	id, err := s.insertWithinQuota(ctx, tenantID, "channels", "max_channels", `
+		INSERT INTO channels (tenant_id, name, stream_secret, logo_url, category_id)
+		SELECT $1, $2, $3, $4, $5
+		WHERE $5::bigint IS NULL OR EXISTS (SELECT 1 FROM categories k WHERE k.id = $5 AND k.tenant_id = $1)
+		RETURNING id`, tenantID, c.Name, c.Secret, c.LogoURL, c.CategoryID)
+	return id, notFound(err)
 }
 
 const channelSelect = `
@@ -89,12 +105,25 @@ func (s *Store) SetChannelCategory(ctx context.Context, channelID int64, categor
 	return err
 }
 
-// CreateViewer, yayıncının izleyici kotası doluysa ErrQuotaExceeded döner.
+// NewViewer, oluşturulacak izleyicinin alanlarıdır.
+type NewViewer struct {
+	Username       string
+	Password       string
+	MaxConnections int
+	ExpiresAt      *time.Time // nil süresiz
+}
+
 func (s *Store) CreateViewer(ctx context.Context, tenantID int64, username, password string, maxConnections int) (int64, error) {
-	id, err := s.insertWithinQuota(ctx, tenantID, "viewers", "max_viewers",
-		`INSERT INTO viewers (tenant_id, username, password, max_connections) VALUES ($1, $2, $3, $4) RETURNING id`,
-		tenantID, username, password, maxConnections)
-	return id, conflict(err) // kullanıcı adı platform genelinde tekildir
+	return s.CreateViewerWith(ctx, tenantID, NewViewer{Username: username, Password: password, MaxConnections: maxConnections})
+}
+
+// CreateViewerWith, izleyiciyi tek adımda oluşturur. Kota doluysa ErrQuotaExceeded, kullanıcı adı
+// alınmışsa (platform genelinde tekildir) ErrConflict döner.
+func (s *Store) CreateViewerWith(ctx context.Context, tenantID int64, v NewViewer) (int64, error) {
+	id, err := s.insertWithinQuota(ctx, tenantID, "viewers", "max_viewers", `
+		INSERT INTO viewers (tenant_id, username, password, max_connections, expires_at)
+		VALUES ($1, $2, $3, $4, $5) RETURNING id`, tenantID, v.Username, v.Password, v.MaxConnections, v.ExpiresAt)
+	return id, conflict(err)
 }
 
 const viewerSelect = `

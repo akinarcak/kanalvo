@@ -108,12 +108,12 @@ function Shell({ account, onLogout }: { account: Account; onLogout: () => void }
   const [path, go] = usePath();
   const current = path === passwordPage ? null : (pages.find((p) => p.path === path) ?? pages[0]);
 
-  const logout = async () => {
-    try {
-      await api.post("/api/logout");
-    } finally {
-      onLogout();
-    }
+  // Çıkış isteği başarısız olsa da (ör. oturum zaten kapanmış) giriş ekranına dönülür.
+  const logout = () => {
+    api
+      .post("/api/logout")
+      .catch(() => undefined)
+      .finally(onLogout);
   };
 
   return (
@@ -145,7 +145,7 @@ function Shell({ account, onLogout }: { account: Account; onLogout: () => void }
           <button type="button" className="ghost" onClick={() => go(passwordPage)}>
             Şifre değiştir
           </button>
-          <button type="button" className="ghost" onClick={() => void logout()}>
+          <button type="button" className="ghost" onClick={logout}>
             Çıkış yap
           </button>
         </div>

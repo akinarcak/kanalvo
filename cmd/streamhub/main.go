@@ -96,7 +96,7 @@ func serve(ctx context.Context) error {
 	panelapi.New(st, sessions, ratelimit.New(cfg.LoginMaxFailures, cfg.LoginFailureWindow, time.Now), panelapi.Config{
 		SessionTTL:        cfg.PanelSessionTTL,
 		SecureCookie:      !cfg.PanelInsecureCookie,
-		TrustProxyHeaders: cfg.TrustProxyHeaders,
+		TrustProxyHeaders: cfg.PanelTrustProxyHeaders,
 		IngestURL:         cfg.IngestBaseURL,
 		PublicBaseURL:     cfg.PublicBaseURL,
 		Idle:              hlsSessionIdle,

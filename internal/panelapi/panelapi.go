@@ -12,10 +12,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"streamhub/internal/clientip"
@@ -47,15 +49,22 @@ type Config struct {
 	Idle time.Duration
 }
 
+// Aynı anda yürüyen şifre işlemi sayısı ve sıra bekleme süresi (bkz. passhash.Gate).
+const (
+	hashConcurrency = 4
+	hashWait        = 3 * time.Second
+)
+
 type Handler struct {
 	store    *store.Store
 	sessions *session.Manager
 	limiter  *ratelimit.Limiter
+	hashes   *passhash.Gate
 	cfg      Config
 }
 
 func New(s *store.Store, sessions *session.Manager, limiter *ratelimit.Limiter, cfg Config) *Handler {
-	return &Handler{store: s, sessions: sessions, limiter: limiter, cfg: cfg}
+	return &Handler{store: s, sessions: sessions, limiter: limiter, hashes: passhash.NewGate(hashConcurrency, hashWait), cfg: cfg}
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
@@ -191,16 +200,17 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	role, id, name, status, err := h.authenticate(r.Context(), in.Email, in.Password)
+	acc, status, err := h.authenticate(r.Context(), strings.TrimSpace(in.Email), in.Password)
 	if errors.Is(err, errBadCredentials) {
 		fail(w, http.StatusUnauthorized, "invalid_credentials", "E-posta veya şifre hatalı.")
 		return
 	}
 	h.limiter.Success(key)
 	if err != nil {
-		h.internal(w, err)
+		h.hashError(w, err)
 		return
 	}
+	role, id := acc.Role, acc.ID
 	if status != "active" {
 		fail(w, http.StatusForbidden, "suspended", "Hesabınız askıya alınmış.")
 		return
@@ -212,36 +222,51 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.setCookie(w, token, int(h.cfg.SessionTTL.Seconds()))
-	ok(w, http.StatusOK, account{Role: role, ID: id, Name: name, Email: in.Email})
+	ok(w, http.StatusOK, acc)
 }
 
 var errBadCredentials = errors.New("panelapi: e-posta veya şifre hatalı")
 
 // authenticate, önce yöneticilere sonra yayıncılara bakar. Hesap bulunamasa da bir şifre
 // doğrulaması kadar zaman harcar.
-func (h *Handler) authenticate(ctx context.Context, email, password string) (role string, id int64, name, status string, err error) {
+func (h *Handler) authenticate(ctx context.Context, email, password string) (account, string, error) {
+	var acc account
+	var hash, status string
+
 	admin, err := h.store.AdminByEmail(ctx, email)
 	switch {
 	case err == nil:
-		if !passhash.Verify(admin.PasswordHash, password) {
-			return "", 0, "", "", errBadCredentials
-		}
-		return roleAdmin, admin.ID, admin.Email, "active", nil
+		acc, hash, status = account{Role: roleAdmin, ID: admin.ID, Name: admin.Email, Email: admin.Email}, admin.PasswordHash, "active"
 	case !errors.Is(err, store.ErrNotFound):
-		return "", 0, "", "", err
-	}
-	tenant, err := h.store.TenantByEmail(ctx, email)
-	switch {
-	case err == nil && tenant.PasswordHash != "":
-		if !passhash.Verify(tenant.PasswordHash, password) {
-			return "", 0, "", "", errBadCredentials
+		return account{}, "", err
+	default:
+		tenant, err := h.store.TenantByEmail(ctx, email)
+		switch {
+		case err == nil:
+			acc, hash, status = account{Role: roleTenant, ID: tenant.ID, Name: tenant.Name, Email: tenant.Email}, tenant.PasswordHash, tenant.Status
+		case !errors.Is(err, store.ErrNotFound):
+			return account{}, "", err
 		}
-		return roleTenant, tenant.ID, tenant.Name, tenant.Status, nil
-	case err != nil && !errors.Is(err, store.ErrNotFound):
-		return "", 0, "", "", err
 	}
-	passhash.VerifyDummy(password)
-	return "", 0, "", "", errBadCredentials
+	// hash boşsa (hesap yok veya panel hesabı yok) sahte bir doğrulama yapılır.
+	valid, err := h.hashes.Verify(ctx, hash, password)
+	if err != nil {
+		return account{}, "", err
+	}
+	if !valid {
+		return account{}, "", errBadCredentials
+	}
+	return acc, status, nil
+}
+
+// hashError, şifre işlemi sırasında oluşan hatayı yanıtlar: sunucu meşgulse 503, aksi halde 500.
+func (h *Handler) hashError(w http.ResponseWriter, err error) {
+	if errors.Is(err, passhash.ErrBusy) {
+		w.Header().Set("Retry-After", "5")
+		fail(w, http.StatusServiceUnavailable, "busy", "Sunucu şu an meşgul. Birkaç saniye sonra yeniden deneyin.")
+		return
+	}
+	h.internal(w, err)
 }
 
 func (h *Handler) logout(w http.ResponseWriter, r *http.Request, a actor) {
@@ -296,13 +321,26 @@ func (h *Handler) changePassword(w http.ResponseWriter, r *http.Request, a actor
 		h.internal(w, err)
 		return
 	}
-	if !passhash.Verify(currentHash, in.Current) {
+	// Mevcut şifre denemeleri hesap başına sınırlanır.
+	key := fmt.Sprintf("password:%s:%d", a.role, a.id)
+	if !h.limiter.Allow(key) {
+		fail(w, http.StatusTooManyRequests, "rate_limited", "Çok fazla hatalı deneme. Birkaç dakika sonra yeniden deneyin.")
+		return
+	}
+	valid, err := h.hashes.Verify(r.Context(), currentHash, in.Current)
+	if err != nil {
+		h.limiter.Success(key)
+		h.hashError(w, err)
+		return
+	}
+	if !valid {
 		fail(w, http.StatusForbidden, "wrong_password", "Mevcut şifre hatalı.")
 		return
 	}
-	newHash, err := passhash.Hash(in.New)
+	h.limiter.Success(key)
+	newHash, err := h.hashes.Hash(r.Context(), in.New)
 	if err != nil {
-		h.internal(w, err)
+		h.hashError(w, err)
 		return
 	}
 	if a.role == roleAdmin {

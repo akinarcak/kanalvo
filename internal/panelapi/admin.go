@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 
-	"streamhub/internal/passhash"
 	"streamhub/internal/store"
 )
 
@@ -119,9 +118,9 @@ func (h *Handler) adminCreateTenant(w http.ResponseWriter, r *http.Request, _ ac
 		return
 	}
 	password := randomHex(10)
-	hash, err := passhash.Hash(password)
+	hash, err := h.hashes.Hash(r.Context(), password)
 	if err != nil {
-		h.internal(w, err)
+		h.hashError(w, err)
 		return
 	}
 	id, err := h.store.CreateTenantAccount(r.Context(), name, email, hash)
@@ -239,9 +238,9 @@ func (h *Handler) adminResetPassword(w http.ResponseWriter, r *http.Request, _ a
 		return
 	}
 	password := randomHex(10)
-	hash, err := passhash.Hash(password)
+	hash, err := h.hashes.Hash(ctx, password)
 	if err != nil {
-		h.internal(w, err)
+		h.hashError(w, err)
 		return
 	}
 	if err := h.store.SetTenantPassword(ctx, id, hash); err != nil {

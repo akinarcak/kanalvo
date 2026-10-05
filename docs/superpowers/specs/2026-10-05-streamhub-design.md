@@ -215,6 +215,8 @@ kanalları çevrimdışı yapar; SRS'e ulaşılamazsa hiçbir kanala dokunmaz.
 | "İzleme bitti" bildirimi kayboldu | `.ts` oturumları 5 saniyede bir SRS'in bağlantı listesiyle eşitlenir; SRS'e ulaşılamazsa oturum silinmez |
 | İzleyici askıya alındı veya süresi doldu | Süren `.ts` izlemesi birkaç saniye içinde kesilir; HLS bir sonraki istekte reddedilir |
 | Origin'e RTMP ile izleme denemesi | Geçerli imzayla bile reddedilir |
+| Kanal veya izleyici silindi, yayın anahtarı ya da izleyici şifresi yenilendi | İlgili yayın ve izlemeler kesilir. Kesme o an başarısız olursa kuyrukta bekler ve yeniden denenir |
+| Çok sayıda eşzamanlı panel girişi | Aynı anda sınırlı sayıda şifre doğrulanır; fazlası 503 alır |
 | Yayıncı askıya alındı | Açık yayınları birkaç saniye içinde kesilir, izleyicileri izleyemez |
 | Geçersiz yayın anahtarı veya kota aşımı | SRS yayını reddeder |
 | Aynı kanala ikinci yayın bağlantısı | İkincisi reddedilir |
