@@ -39,6 +39,8 @@
 | `GET /xmltv.php` | Boş program rehberi |
 | `GET /{kullanıcı}/{şifre}/{kanal}` ve `/live/...` biçiminde uzantısız | `.ts` yönlendirmesi |
 
+Spec'ten bilinçli sapma (spec buna göre güncellendi): süresi dolmuş veya askıdaki izleyici `auth: 0` yerine `auth: 1` ve durum bilgisi alır; gerçek Xtream panelleri böyle davranır ve oynatıcı izleyiciye anlamlı bir mesaj gösterir. Bu izleyici hiçbir kanalı listeleyemez ve izleyemez.
+
 Spec'ten bilinçli sapma: EPG eylemleri spec'te "boş liste" olarak geçer; Xtream'in gerçek biçimi `{"epg_listings":[]}` nesnesidir ve oynatıcılar bunu bekler.
 
 ## Dosya yapısı

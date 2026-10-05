@@ -36,17 +36,19 @@ func New(s *store.Store, l *ratelimit.Limiter, trustProxyHeaders bool) *Authenti
 // veya veritabanı hatası.
 func (a *Authenticator) Viewer(r *http.Request, username, password string) (store.Viewer, error) {
 	key := a.clientKey(r)
-	if a.limiter.Blocked(key) {
+	// Deneme hakkı veritabanına gitmeden önce ayrılır; böylece eşzamanlı istekler eşiği aşamaz.
+	if !a.limiter.Allow(key) {
 		return store.Viewer{}, ErrRateLimited
 	}
 	v, err := a.lookup(r.Context(), username)
 	if err == nil && subtle.ConstantTimeCompare([]byte(password), []byte(v.Password)) == 1 {
+		a.limiter.Success(key)
 		return v, nil
 	}
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		a.limiter.Success(key) // veritabanı hatası istemcinin hatası değildir
 		return store.Viewer{}, err
 	}
-	a.limiter.Fail(key)
 	return store.Viewer{}, ErrInvalid
 }
 

@@ -78,6 +78,26 @@ func TestClearingAndDeletingCategory(t *testing.T) {
 	if must(s.ChannelByID(ctx, ch)).CategoryID != nil {
 		t.Fatal("kategori kaldırılabilmeli")
 	}
+
+	if err := s.SetChannelCategory(ctx, ch, &cat); err != nil {
+		t.Fatal(err)
+	}
+	other := must(s.CreateTenant(ctx, "t2"))
+	if err := s.DeleteCategory(ctx, other, cat); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("başka yayıncı kategoriyi silememeli, gelen: %v", err)
+	}
+	if err := s.DeleteCategory(ctx, tid, cat); err != nil {
+		t.Fatal(err)
+	}
+	if got := must(s.CategoriesByTenant(ctx, tid)); len(got) != 0 {
+		t.Fatalf("kategori silinmeliydi: %+v", got)
+	}
+	if must(s.ChannelByID(ctx, ch)).CategoryID != nil {
+		t.Fatal("kategorisi silinen kanal kategorisiz kalmalı")
+	}
+	if err := s.DeleteCategory(ctx, tid, cat); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("olmayan kategori için ErrNotFound bekleniyordu, gelen: %v", err)
+	}
 }
 
 func TestViewerHasCreatedAt(t *testing.T) {

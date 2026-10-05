@@ -3,6 +3,7 @@ package ratelimit
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -16,92 +17,114 @@ func newTest(max int, window time.Duration) (*Limiter, *clock) {
 	return New(max, window, c.now), c
 }
 
+// fail, sonucu hatalı çıkan bir denemeyi temsil eder: izin alınır ve geri verilmez.
+func fail(l *Limiter, key string) bool { return l.Allow(key) }
+
 func TestBlocksAfterMaxFailuresWithinWindow(t *testing.T) {
 	l, _ := newTest(3, time.Minute)
-	for i := 0; i < 2; i++ {
-		l.Fail("a")
-		if l.Blocked("a") {
-			t.Fatalf("%d hatadan sonra engellenmemeli", i+1)
+	for i := 0; i < 3; i++ {
+		if !fail(l, "a") {
+			t.Fatalf("%d. denemeye izin verilmeliydi", i+1)
 		}
 	}
-	l.Fail("a")
-	if !l.Blocked("a") {
-		t.Fatal("3. hatadan sonra engellenmeli")
+	if l.Allow("a") {
+		t.Fatal("3 hatadan sonra deneme engellenmeli")
+	}
+}
+
+func TestSuccessDoesNotConsumeAnAttempt(t *testing.T) {
+	l, _ := newTest(2, time.Minute)
+	for i := 0; i < 50; i++ {
+		if !l.Allow("a") {
+			t.Fatalf("%d. başarılı deneme engellendi", i+1)
+		}
+		l.Success("a")
+	}
+	fail(l, "a")
+	fail(l, "a")
+	if l.Allow("a") {
+		t.Fatal("başarılı denemeler hata sayacını sıfırlamamalı")
+	}
+	l.Success("a")
+	l.Success("a")
+	l.Success("yok")
+	if n := l.len(); n > 1 {
+		t.Fatalf("Success yeni kayıt oluşturmamalı: %d", n)
 	}
 }
 
 func TestKeysAreIndependent(t *testing.T) {
 	l, _ := newTest(1, time.Minute)
-	l.Fail("a")
-	if !l.Blocked("a") || l.Blocked("b") {
+	fail(l, "a")
+	if l.Allow("a") || !l.Allow("b") {
 		t.Fatal("yalnızca hata yapan anahtar engellenmeli")
 	}
 }
 
 func TestUnblocksWhenWindowEnds(t *testing.T) {
 	l, c := newTest(2, time.Minute)
-	l.Fail("a")
-	l.Fail("a")
-	c.t = c.t.Add(59 * time.Second)
-	if !l.Blocked("a") {
+	fail(l, "a")
+	c.t = c.t.Add(30 * time.Second)
+	fail(l, "a")
+	c.t = c.t.Add(29 * time.Second)
+	if l.Allow("a") {
 		t.Fatal("pencere bitmeden engel kalkmamalı")
 	}
 	c.t = c.t.Add(time.Second)
-	if l.Blocked("a") {
-		t.Fatal("pencere bitince engel kalkmalı")
+	if !fail(l, "a") {
+		t.Fatal("engel, ilk hatadan bir pencere sonra kalkmalı")
 	}
-	l.Fail("a")
-	if l.Blocked("a") {
+	if !l.Allow("a") {
 		t.Fatal("yeni pencerede sayaç sıfırdan başlamalı")
 	}
 }
 
-func TestFailuresWhileBlockedDoNotExtendTheBlock(t *testing.T) {
-	l, c := newTest(1, time.Minute)
-	l.Fail("a")
-	c.t = c.t.Add(30 * time.Second)
-	l.Fail("a")
-	c.t = c.t.Add(30 * time.Second)
-	if l.Blocked("a") {
-		t.Fatal("engel, ilk hatadan bir pencere sonra kalkmalı")
-	}
-}
-
-func TestEntryCountIsBounded(t *testing.T) {
-	l, c := newTest(1, time.Minute)
-	l.Fail("kurban")
-	start := time.Now()
-	for i := 0; i < maxEntries*2; i++ {
-		l.Fail(fmt.Sprintf("k%d", i))
-	}
-	// Tablo doluyken her hata tüm tabloyu taramamalı; aksi halde dolu tablo bir yavaşlatma saldırısı olur.
-	if took := time.Since(start); took > 5*time.Second {
-		t.Fatalf("dolu tabloda %d hata %s sürdü", maxEntries*2, took)
-	}
-	if n := l.len(); n > maxEntries {
-		t.Fatalf("kayıt sayısı %d, sınır %d", n, maxEntries)
-	}
-
-	c.t = c.t.Add(2 * time.Minute)
-	l.Fail("yeni")
-	if n := l.len(); n != 1 {
-		t.Fatalf("süresi dolan kayıtlar temizlenmeli, kalan: %d", n)
-	}
-}
-
-func TestConcurrentUse(t *testing.T) {
-	l, _ := newTest(1000, time.Minute)
+// Eşzamanlı istekler eşiği aşamamalı: izin alma ve sayma tek adımdır.
+func TestConcurrentAttemptsCannotExceedMax(t *testing.T) {
+	const max = 20
+	l, _ := newTest(max, time.Minute)
+	var allowed atomic.Int64
 	var wg sync.WaitGroup
-	for g := 0; g < 8; g++ {
+	for g := 0; g < 500; g++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for i := 0; i < 500; i++ {
-				key := fmt.Sprintf("k%d", i%10)
-				l.Fail(key)
-				l.Blocked(key)
+			if l.Allow("saldırgan") {
+				allowed.Add(1)
 			}
 		}()
 	}
 	wg.Wait()
+	if got := allowed.Load(); got != max {
+		t.Fatalf("%d denemeye izin verildi, eşik %d", got, max)
+	}
+}
+
+func TestTableIsBoundedAndFailsOpenWhenFull(t *testing.T) {
+	l, c := newTest(1, time.Minute)
+	fail(l, "kurban")
+	start := time.Now()
+	for i := 0; i < maxEntries*2; i++ {
+		fail(l, fmt.Sprintf("k%d", i))
+	}
+	// Tablo doluyken her deneme tüm tabloyu taramamalı; aksi halde dolu tablo bir yavaşlatma saldırısı olur.
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("dolu tabloda %d deneme %s sürdü", maxEntries*2, took)
+	}
+	if n := l.len(); n > maxEntries {
+		t.Fatalf("kayıt sayısı %d, sınır %d", n, maxEntries)
+	}
+	if l.Allow("kurban") {
+		t.Fatal("tablo dolsa da izlenen anahtarın engeli sürmeli")
+	}
+	// Bilinen sınır: tablo doluyken yeni anahtarlar izlenemez ve sınırsız deneyebilir.
+	if !l.Allow("izlenemeyen") || !l.Allow("izlenemeyen") {
+		t.Fatal("tablo doluyken yeni anahtara izin verilmeli (bellek sınırı için bilinçli tercih)")
+	}
+
+	c.t = c.t.Add(2 * time.Minute)
+	fail(l, "yeni")
+	if n := l.len(); n != 1 {
+		t.Fatalf("süresi dolan kayıtlar temizlenmeli, kalan: %d", n)
+	}
 }

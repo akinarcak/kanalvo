@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -113,6 +115,40 @@ func TestBlocksIPAfterMaxFailures(t *testing.T) {
 	}
 	if _, err := a.Viewer(from("5.6.7.8:1000", ""), "ali", "pw"); err != nil {
 		t.Fatalf("başka IP etkilenmemeli: %v", err)
+	}
+}
+
+// Eşzamanlı hatalı girişler eşikten fazla şifre denemesi yapamamalı.
+func TestConcurrentFailuresCannotExceedLimit(t *testing.T) {
+	_, a := setup(t, false)
+	var evaluated, limited atomic.Int64
+	var wg sync.WaitGroup
+	for i := 0; i < 60; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := a.Viewer(from("1.2.3.4:1000", ""), "ali", "yanlis")
+			switch {
+			case errors.Is(err, auth.ErrInvalid):
+				evaluated.Add(1)
+			case errors.Is(err, auth.ErrRateLimited):
+				limited.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if evaluated.Load() != maxFailures || limited.Load() != 60-maxFailures {
+		t.Fatalf("%d şifre denemesi değerlendirildi (eşik %d), %d engellendi", evaluated.Load(), maxFailures, limited.Load())
+	}
+}
+
+func TestSuccessfulLoginsAreNotLimited(t *testing.T) {
+	_, a := setup(t, false)
+	r := from("1.2.3.4:1000", "")
+	for i := 0; i < maxFailures*5; i++ {
+		if _, err := a.Viewer(r, "ali", "pw"); err != nil {
+			t.Fatalf("%d. doğru giriş reddedildi: %v", i+1, err)
+		}
 	}
 }
 

@@ -72,12 +72,23 @@ func serve(ctx context.Context) error {
 	defer st.Close()
 
 	signer := token.NewSigner(cfg.TokenKey)
+
 	// SRS yetki sorguları ayrı, dışarıya açılmayan bir adreste dinlenir.
 	internal := http.NewServeMux()
 	hooks.New(st, signer, time.Now).Register(internal, cfg.HookSecret)
+	mux := publicMux(st, signer, cfg, publicBase, srsHLS)
 
+	go reconcile.New(st, cfg.SRSAPIURL, reconcileGrace).Run(ctx, reconcileInterval)
+
+	log.Printf("streamhub dinliyor: izleyiciler %s, SRS sorguları %s", cfg.HTTPAddr, cfg.HooksAddr)
+	return httpserve.Run(ctx, shutdownGrace, httpserve.New(cfg.HTTPAddr, mux), httpserve.New(cfg.HooksAddr, internal))
+}
+
+// publicMux, izleyicilere açık tüm uçları tek yönlendiricide toplar.
+func publicMux(st *store.Store, signer *token.Signer, cfg config.Config, publicBase, srsHLS *url.URL) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok") })
+
 	limiter := ratelimit.New(cfg.LoginMaxFailures, cfg.LoginFailureWindow, time.Now)
 	authn := auth.New(st, limiter, cfg.TrustProxyHeaders)
 	xtream.New(st, authn, publicBase, time.Now).Register(mux)
@@ -88,11 +99,7 @@ func serve(ctx context.Context) error {
 		HLSTokenTTL: cfg.HLSTokenTTL,
 	}, time.Now).Register(mux)
 	hlsgw.New(st, signer, srsHLS, srsResponseTimeout, time.Now).Register(mux)
-
-	go reconcile.New(st, cfg.SRSAPIURL, reconcileGrace).Run(ctx, reconcileInterval)
-
-	log.Printf("streamhub dinliyor: izleyiciler %s, SRS sorguları %s", cfg.HTTPAddr, cfg.HooksAddr)
-	return httpserve.Run(ctx, shutdownGrace, httpserve.New(cfg.HTTPAddr, mux), httpserve.New(cfg.HooksAddr, internal))
+	return mux
 }
 
 // seedDev, yerel deneme için bir yayıncı, kanal ve izleyici oluşturur ve bilgilerini JSON olarak yazar.

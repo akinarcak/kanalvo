@@ -27,26 +27,15 @@ type Limiter struct {
 	lastSweep time.Time
 }
 
-// New: bir anahtar window içinde max hataya ulaşırsa, ilk hatasından window sonrasına kadar engellenir.
+// New: bir anahtar window içinde max hatalı deneme yaparsa, ilk hatasından window sonrasına kadar engellenir.
 func New(max int, window time.Duration, now func() time.Time) *Limiter {
 	return &Limiter{max: max, window: window, now: now, entries: map[string]entry{}, lastSweep: now()}
 }
 
-func (l *Limiter) Blocked(key string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	e, ok := l.entries[key]
-	if !ok {
-		return false
-	}
-	if l.expired(e, l.now()) {
-		delete(l.entries, key)
-		return false
-	}
-	return e.count >= l.max
-}
-
-func (l *Limiter) Fail(key string) {
+// Allow, bir deneme hakkı ayırır; anahtar eşiğe ulaşmışsa false döner. Ayırma ve sayma tek
+// adımda yapılır, böylece eşzamanlı istekler eşiği aşamaz. Deneme başarılı çıkarsa çağıran
+// Success ile hakkı geri verir; geri verilmeyen her hak bir hata sayılır.
+func (l *Limiter) Allow(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
@@ -54,19 +43,43 @@ func (l *Limiter) Fail(key string) {
 		l.sweep(now)
 	}
 	e, ok := l.entries[key]
-	if !ok || l.expired(e, now) {
-		if !ok && len(l.entries) >= maxEntries {
-			// Dolu tabloyu her hatada taramak pahalıdır; en çok saniyede bir taranır.
+	if ok && l.expired(e, now) {
+		delete(l.entries, key)
+		ok = false
+	}
+	if !ok {
+		if len(l.entries) >= maxEntries {
+			// Dolu tabloyu her denemede taramak pahalıdır; en çok saniyede bir taranır.
 			if now.Sub(l.lastSweep) >= fullSweepInterval {
 				l.sweep(now)
 			}
 			if len(l.entries) >= maxEntries {
-				return
+				// Tablo dolu: yeni anahtar izlenemez. Belleği sınırlamak için bilinçli tercih.
+				return true
 			}
 		}
 		e = entry{first: now}
 	}
+	if e.count >= l.max {
+		return false
+	}
 	e.count++
+	l.entries[key] = e
+	return true
+}
+
+// Success, başarılı çıkan bir deneme için Allow ile ayrılan hakkı geri verir.
+func (l *Limiter) Success(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	e, ok := l.entries[key]
+	if !ok {
+		return
+	}
+	if e.count--; e.count <= 0 {
+		delete(l.entries, key)
+		return
+	}
 	l.entries[key] = e
 }
 

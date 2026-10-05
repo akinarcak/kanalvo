@@ -66,6 +66,15 @@ func (s *Store) CategoriesByTenant(ctx context.Context, tenantID int64) ([]Categ
 	return pgx.CollectRows(rows, pgx.RowToStructByPos[Category])
 }
 
+// DeleteCategory, yayıncının kategorisini siler; o kategorideki kanallar kategorisiz kalır.
+func (s *Store) DeleteCategory(ctx context.Context, tenantID, id int64) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM categories WHERE id = $1 AND tenant_id = $2`, id, tenantID)
+	if err == nil && tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return err
+}
+
 // SetChannelCategory, kanalın kategorisini değiştirir; nil kategoriyi kaldırır.
 // Kategori kanalla aynı yayıncıya ait değilse ErrNotFound döner.
 func (s *Store) SetChannelCategory(ctx context.Context, channelID int64, categoryID *int64) error {

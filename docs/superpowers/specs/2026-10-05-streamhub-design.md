@@ -196,7 +196,9 @@ kanalları çevrimdışı yapar; SRS'e ulaşılamazsa hiçbir kanala dokunmaz.
 | Durum | Davranış |
 |---|---|
 | Kanal çevrimdışıyken izleme isteği | 404 |
-| Geçersiz, süresi dolmuş veya askıdaki izleyici | Xtream biçiminde giriş reddi (`auth: 0`); yayın isteğinde 403 |
+| Geçersiz kullanıcı adı veya şifre | Xtream biçiminde giriş reddi (`auth: 0`); yayın isteğinde 403 |
+| Süresi dolmuş veya askıdaki izleyici, askıdaki yayıncının izleyicisi | Giriş yanıtı durumu bildirir (`auth: 1`, `status`: `Expired`, `Banned` veya `Disabled`); kanal listeleri boş döner, yayın isteği ve M3U 403 alır. Gerçek Xtream panelleri böyle davranır ve oynatıcılar izleyiciye "süre doldu" gibi anlamlı bir mesaj gösterir |
+| Aynı IP'den çok sayıda hatalı giriş | Pencere bitene kadar 429 (doğru şifreyle bile) |
 | İzleyici başka yayıncının kanalını ister | 404 |
 | Bağlantı limiti aşıldı | Yeni bağlantı 403; mevcut izleme sürer |
 | Edge sağlık sinyali kesildi | Yönlendirmeden çıkar, sinyal dönünce geri eklenir |
