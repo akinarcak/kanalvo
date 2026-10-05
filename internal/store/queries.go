@@ -91,9 +91,10 @@ func (s *Store) SetChannelCategory(ctx context.Context, channelID int64, categor
 
 // CreateViewer, yayıncının izleyici kotası doluysa ErrQuotaExceeded döner.
 func (s *Store) CreateViewer(ctx context.Context, tenantID int64, username, password string, maxConnections int) (int64, error) {
-	return s.insertWithinQuota(ctx, tenantID, "viewers", "max_viewers",
+	id, err := s.insertWithinQuota(ctx, tenantID, "viewers", "max_viewers",
 		`INSERT INTO viewers (tenant_id, username, password, max_connections) VALUES ($1, $2, $3, $4) RETURNING id`,
 		tenantID, username, password, maxConnections)
+	return id, conflict(err) // kullanıcı adı platform genelinde tekildir
 }
 
 const viewerSelect = `
