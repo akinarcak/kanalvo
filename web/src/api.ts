@@ -133,4 +133,23 @@ export interface Session {
   kind: "ts" | "hls";
   ip: string;
   started_at: string;
+  edge: string;
+}
+
+// Edge, izleyicilerin yayını aldığı sunucudur. builtin, panelin çalıştığı sunucudur.
+export interface Edge {
+  id: number;
+  name: string;
+  builtin: boolean;
+  base_url: string;
+  hls_base_url: string;
+  control_url: string;
+  pull_ip: string;
+  weight: number;
+  enabled: boolean;
+  healthy: boolean;
+  last_seen_at: string | null;
+  active_sessions: number;
+  // Uzak sunucunun .env dosyasına yazılacak satırlar; yerel sunucuda yoktur.
+  setup?: string;
 }

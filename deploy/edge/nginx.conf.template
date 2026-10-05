@@ -1,0 +1,56 @@
+# Edge'in izleyicilere açık yüzü. ${CONTROL_URL} ve ${EDGE_KEY} kapsayıcı başlarken yerine konur.
+
+# HLS dosyaları ana sunucudan bir kez çekilir, sonraki izleyicilere buradan verilir.
+proxy_cache_path /var/cache/nginx/hls levels=1:2 keys_zone=hls:10m max_size=1g inactive=2m use_temp_path=off;
+
+server {
+    listen 80;
+    server_tokens off;
+
+    # Kesintisiz MPEG-TS: edge SRS'ten. İzleyicinin adresi SRS'e başlıkla bildirilir; SRS onu
+    # izleme sorgusunda ana sunucuya iletir.
+    location ~ ^/live/[0-9]+\.ts$ {
+        proxy_pass http://edge-srs:8080;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_read_timeout 1h;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+    }
+
+    # HLS: her istek ana sunucuya sorulur (imza, izleyici durumu, bağlantı limiti). Kabul edilirse
+    # ana sunucu dosyayı göndermez, X-Accel-Redirect ile aşağıdaki önbellekli konuma yönlendirir.
+    location /hls/ {
+        proxy_pass ${CONTROL_URL}/edge/hls/;
+        proxy_ssl_server_name on;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header X-Edge-Key "${EDGE_KEY}";
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    # Yalnızca yukarıdaki yetkilendirmeden sonra ulaşılır; izleyici doğrudan isteyemez.
+    # Önbellek süresini ana sunucu belirler (çalma listesi 1 sn, parça 60 sn).
+    location /_segment/ {
+        internal;
+        proxy_pass ${CONTROL_URL}/edge/segment/;
+        proxy_ssl_server_name on;
+        proxy_set_header X-Edge-Key "${EDGE_KEY}";
+        proxy_cache hls;
+        proxy_cache_key $uri;
+        proxy_cache_lock on;
+        proxy_cache_lock_timeout 5s;
+    }
+
+    # Ana sunucunun bağlantıları listelediği ve kestiği SRS yönetim API'si; sağlık sinyali de budur.
+    location /_srs/ {
+        if ($http_x_edge_key != "${EDGE_KEY}") {
+            return 403;
+        }
+        proxy_pass http://edge-srs:1985/;
+    }
+
+    location / {
+        return 404;
+    }
+}

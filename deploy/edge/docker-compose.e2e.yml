@@ -1,0 +1,12 @@
+# Uçtan uca test için: edge'i ana sunucunun Compose ağına bağlar; böylece aynı makinede "ikinci
+# sunucu" gibi çalışır. Gerçek kurulumda kullanılmaz.
+services:
+  edge-srs:
+    networks: [default, streamhub]
+  edge-nginx:
+    networks: [default, streamhub]
+
+networks:
+  streamhub:
+    external: true
+    name: streamhub_default

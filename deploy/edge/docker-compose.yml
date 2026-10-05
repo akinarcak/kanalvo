@@ -1,0 +1,44 @@
+# Uzak edge: yayını ana sunucudan (origin) çekip izleyicilere dağıtan sunucu.
+#
+# Kurulum: bu klasörü edge sunucusuna kopyalayın, panelde "Sunucular" sayfasında gösterilen
+# satırları bu klasörde .env dosyasına yazın ve "docker compose up -d" çalıştırın.
+#
+#   CONTROL_URL : ana sunucunun izleyicilere açık adresi (ör. http://tv.example.com:8000)
+#   EDGE_KEY    : bu edge'in anahtarı (panel üretir)
+#   ORIGIN_RTMP : origin'in RTMP adresi, "sunucu:port" (ör. tv.example.com:1935)
+#   EDGE_PORT   : izleyicilere açılan port (varsayılan 80)
+#
+# Dışarıya yalnızca nginx'in portu açılır. Edge'de veritabanı ya da imza anahtarı yoktur; her
+# izleme isteğini ana sunucu yetkilendirir.
+name: streamhub-edge
+
+services:
+  edge-srs:
+    image: ossrs/srs:5
+    restart: unless-stopped
+    environment:
+      CONTROL_URL: ${CONTROL_URL:?CONTROL_URL gerekli}
+      EDGE_KEY: ${EDGE_KEY:?EDGE_KEY gerekli}
+      ORIGIN_RTMP: ${ORIGIN_RTMP:?ORIGIN_RTMP gerekli}
+    volumes:
+      - ./srs-edge.conf.tmpl:/conf/srs.conf.tmpl:ro
+    command:
+      - sh
+      - -c
+      - >-
+        sed -e "s|__CONTROL_URL__|$$CONTROL_URL|g" -e "s|__EDGE_KEY__|$$EDGE_KEY|g" -e "s|__ORIGIN_RTMP__|$$ORIGIN_RTMP|g"
+        /conf/srs.conf.tmpl > /tmp/srs.conf && exec ./objs/srs -c /tmp/srs.conf
+
+  edge-nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    environment:
+      CONTROL_URL: ${CONTROL_URL:?CONTROL_URL gerekli}
+      EDGE_KEY: ${EDGE_KEY:?EDGE_KEY gerekli}
+    volumes:
+      # nginx imajı, /etc/nginx/templates altındaki dosyalarda ortam değişkenlerini yerine koyar.
+      - ./nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+    depends_on:
+      - edge-srs
+    ports:
+      - "${EDGE_PORT:-80}:80"

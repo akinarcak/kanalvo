@@ -449,3 +449,24 @@ td.actions button {
 .meter-fill.full {
   background: var(--danger);
 }
+
+/* Uzak sunucunun kurulum satırları */
+.setup {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.setup h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.setup pre {
+  margin: 0.5rem 0;
+  padding: 0.75rem;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.85rem;
+}

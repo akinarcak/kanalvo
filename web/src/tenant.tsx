@@ -523,6 +523,7 @@ export function Sessions() {
                 <th>Kanal</th>
                 <th>Biçim</th>
                 <th>Ağ adresi</th>
+                <th>Sunucu</th>
                 <th>Başlangıç</th>
               </tr>
             </thead>
@@ -535,6 +536,7 @@ export function Sessions() {
                   <td>
                     <code>{s.ip}</code>
                   </td>
+                  <td>{s.edge}</td>
                   <td>{formatDate(s.started_at)}</td>
                 </tr>
               ))}

@@ -1,0 +1,38 @@
+# Edge SRS: bir izleyici geldiğinde yayını origin'den çeker ve HTTP üzerinden kesintisiz MPEG-TS
+# olarak verir; son izleyici gidince çekmeyi bırakır. Portları dışarıya açılmaz; izleyiciler ve
+# ana sunucu nginx üzerinden ulaşır.
+listen              1935;
+max_connections     1000;
+daemon              off;
+srs_log_tank        console;
+# info düzeyi, sorgu adresini (edge anahtarı) ve gövdesini (izleyici imzası) loga yazar.
+srs_log_level_v2    warn;
+
+# Ana sunucu bağlantıları buradan listeler ve keser (nginx'te /_srs, edge anahtarıyla korunur).
+http_api {
+    enabled         on;
+    listen          1985;
+}
+
+http_server {
+    enabled         on;
+    listen          8080;
+    dir             ./objs/nginx/html;
+}
+
+vhost __defaultVhost__ {
+    cluster {
+        mode        remote;
+        origin      __ORIGIN_RTMP__;
+    }
+    http_remux {
+        enabled     on;
+        mount       [vhost]/[app]/[stream].ts;
+    }
+    # Her izlemeyi ana sunucu yetkilendirir ve oturumunu tutar.
+    http_hooks {
+        enabled         on;
+        on_play         __CONTROL_URL__/edge/__EDGE_KEY__/hooks/play;
+        on_stop         __CONTROL_URL__/edge/__EDGE_KEY__/hooks/stop;
+    }
+}

@@ -1,6 +1,7 @@
 import { type FormEvent, type ReactNode, useEffect, useState } from "react";
 import { type Account, ApiError, api, sessionEndedEvent } from "./api";
 import { AdminTenants } from "./admin";
+import { AdminEdges } from "./edges";
 import { Categories, Channels, OverviewPage, Sessions, Viewers } from "./tenant";
 import { ErrorNote, Panel, useAction } from "./ui";
 
@@ -10,7 +11,10 @@ interface Page {
   render: () => ReactNode;
 }
 
-const adminPages: Page[] = [{ path: "/yayincilar", title: "Yayıncılar", render: () => <AdminTenants /> }];
+const adminPages: Page[] = [
+  { path: "/yayincilar", title: "Yayıncılar", render: () => <AdminTenants /> },
+  { path: "/sunucular", title: "Sunucular", render: () => <AdminEdges /> },
+];
 
 const tenantPages: Page[] = [
   { path: "/genel", title: "Genel bakış", render: () => <OverviewPage /> },
