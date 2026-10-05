@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"streamhub/internal/hlsgw"
+	"streamhub/internal/session"
+	"streamhub/internal/session/sessiontest"
 	"streamhub/internal/store"
 	"streamhub/internal/testdb"
 	"streamhub/internal/token"
@@ -25,6 +27,8 @@ type fixture struct {
 	store   *store.Store
 	signer  *token.Signer
 	mux     *http.ServeMux
+	srs     *sessiontest.FakeSRS
+	manager *session.Manager
 	tenant  int64
 	channel int64
 	viewer  int64
@@ -67,12 +71,28 @@ func setup(t *testing.T) *fixture {
 	}))
 	t.Cleanup(srs.Close)
 
-	hlsgw.New(f.store, f.signer, must(url.Parse(srs.URL)), time.Second, func() time.Time { return now }).Register(f.mux)
+	f.srs = &sessiontest.FakeSRS{}
+	f.manager = session.New(f.store, f.srs, f.srs, 30*time.Second, 6*time.Hour)
+	hlsgw.New(f.store, f.signer, f.manager, must(url.Parse(srs.URL)), time.Second, false, func() time.Time { return now }).Register(f.mux)
 	return f
 }
 
 func (f *fixture) token(viewer, channel int64, exp time.Time) string {
-	return f.signer.Sign(token.Claims{Kind: token.KindHLS, ViewerID: viewer, ChannelID: channel, ExpiresAt: exp})
+	return f.session(viewer, channel, "a1", exp)
+}
+
+// session, verilen oturum anahtarını taşıyan bir HLS imzası üretir.
+func (f *fixture) session(viewer, channel int64, key string, exp time.Time) string {
+	return f.signer.Sign(token.Claims{Kind: token.KindHLS, ViewerID: viewer, ChannelID: channel, Session: key, ExpiresAt: exp})
+}
+
+// getFrom, isteği verilen bağlantı adresinden gönderir.
+func (f *fixture) getFrom(remote, tok, file string) int {
+	req := httptest.NewRequest(http.MethodGet, "/hls/"+tok+"/"+file, nil)
+	req.RemoteAddr = remote
+	rec := httptest.NewRecorder()
+	f.mux.ServeHTTP(rec, req)
+	return rec.Code
 }
 
 func (f *fixture) valid() string { return f.token(f.viewer, f.channel, now.Add(time.Hour)) }
@@ -170,6 +190,76 @@ func TestRejectsBadTokens(t *testing.T) {
 	}
 }
 
+func TestNewSessionEndsTheOlderOneWhenLimitIsReached(t *testing.T) {
+	f := setup(t) // izleyicinin bağlantı limiti 1
+	first := f.session(f.viewer, f.channel, "aa", now.Add(time.Hour))
+	second := f.session(f.viewer, f.channel, "bb", now.Add(time.Hour))
+	const tv = "1.1.1.1:1000"
+
+	for _, file := range []string{"1.m3u8", "1-9.ts"} {
+		if code := f.getFrom(tv, first, file); code != http.StatusOK {
+			t.Fatalf("ilk oturum %s: durum %d", file, code)
+		}
+	}
+	if code := f.getFrom(tv, second, "1.m3u8"); code != http.StatusOK {
+		t.Fatalf("yeni oturum kabul edilmeli (kanal değiştirme): durum %d", code)
+	}
+	for _, file := range []string{"1.m3u8", "1-9.ts"} {
+		if code := f.getFrom(tv, first, file); code != http.StatusForbidden {
+			t.Fatalf("yerinden edilen oturum %s: durum %d", file, code)
+		}
+	}
+	if code := f.getFrom(tv, second, "1-9.ts"); code != http.StatusOK {
+		t.Fatalf("yeni oturum sürmeli: durum %d", code)
+	}
+}
+
+func TestSharedLinkFromAnotherAddressTakesTheOnlySlot(t *testing.T) {
+	f := setup(t)
+	link := f.session(f.viewer, f.channel, "aa", now.Add(time.Hour))
+	if code := f.getFrom("1.1.1.1:1000", link, "1.m3u8"); code != http.StatusOK {
+		t.Fatalf("durum %d", code)
+	}
+	if code := f.getFrom("2.2.2.2:1000", link, "1.m3u8"); code != http.StatusOK {
+		t.Fatalf("başka adresten açılan aynı adres ayrı bağlantı sayılır ve kabul edilir: durum %d", code)
+	}
+	if code := f.getFrom("1.1.1.1:2000", link, "1.m3u8"); code != http.StatusForbidden {
+		t.Fatalf("limit 1 iken ilk adres yerinden edilmiş olmalı: durum %d", code)
+	}
+}
+
+func TestTenantConnectionQuotaFull(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	if err := f.store.SetTenantQuotas(ctx, f.tenant, store.Quotas{MaxChannels: 10, MaxViewers: 10, MaxConnections: 1}); err != nil {
+		t.Fatal(err)
+	}
+	other := must(f.store.CreateViewer(ctx, f.tenant, "veli", "pw", 1))
+	if code := f.getFrom("1.1.1.1:1", f.session(other, f.channel, "aa", now.Add(time.Hour)), "1.m3u8"); code != http.StatusOK {
+		t.Fatalf("ilk izleyici: durum %d", code)
+	}
+	before := len(f.upstreamHits())
+	if code := f.getFrom("2.2.2.2:1", f.valid(), "1.m3u8"); code != http.StatusForbidden {
+		t.Fatalf("kota doluyken ikinci izleyici reddedilmeli: durum %d", code)
+	}
+	if len(f.upstreamHits()) != before {
+		t.Fatal("reddedilen istek SRS'e gitmemeli")
+	}
+}
+
+func TestRejectedRequestsOpenNoSession(t *testing.T) {
+	f := setup(t)
+	f.get("1.1.9999999999.AAAA", "1.m3u8")
+	f.get(f.valid(), "1.mp4")
+	if n := must(f.manager.ActiveCount(context.Background(), f.viewer)); n != 0 {
+		t.Fatalf("reddedilen istek oturum açmamalı: %d", n)
+	}
+	f.get(f.valid(), "1.m3u8")
+	if n := must(f.manager.ActiveCount(context.Background(), f.viewer)); n != 1 {
+		t.Fatalf("geçerli istek tek oturum açmalı: %d", n)
+	}
+}
+
 func TestOfflineChannelIsNotFound(t *testing.T) {
 	f := setup(t)
 	if err := f.store.MarkOffline(context.Background(), f.channel, "a"); err != nil {
@@ -205,7 +295,7 @@ func TestUpstreamDownIsBadGateway(t *testing.T) {
 	f := setup(t)
 	mux := http.NewServeMux()
 	dead := must(url.Parse("http://127.0.0.1:1"))
-	hlsgw.New(f.store, f.signer, dead, time.Second, func() time.Time { return now }).Register(mux)
+	hlsgw.New(f.store, f.signer, f.manager, dead, time.Second, false, func() time.Time { return now }).Register(mux)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hls/"+f.valid()+"/1.m3u8", nil))
@@ -222,7 +312,7 @@ func TestHungUpstreamIsBadGateway(t *testing.T) {
 	t.Cleanup(func() { close(release) })
 
 	mux := http.NewServeMux()
-	hlsgw.New(f.store, f.signer, must(url.Parse(hung.URL)), 200*time.Millisecond, func() time.Time { return now }).Register(mux)
+	hlsgw.New(f.store, f.signer, f.manager, must(url.Parse(hung.URL)), 200*time.Millisecond, false, func() time.Time { return now }).Register(mux)
 
 	start := time.Now()
 	rec := httptest.NewRecorder()

@@ -24,6 +24,8 @@ type Config struct {
 	// EdgeHLSBaseURL, izleyicinin HLS için yönlendirildiği /hls geçidinin dış adresidir.
 	EdgeHLSBaseURL string
 	SRSAPIURL      string
+	// SRSTSAPIURL, .ts dağıtıcısının yönetim API'sidir; izleyici bağlantılarını listelemek ve kesmek için kullanılır.
+	SRSTSAPIURL string
 	// SRSHLSURL, geçidin HLS dosyalarını çektiği SRS HTTP sunucusunun iç adresidir.
 	SRSHLSURL   string
 	TokenTTL    time.Duration
@@ -47,6 +49,7 @@ func Load(getenv func(string) string) (Config, error) {
 		EdgeTSBaseURL:      strings.TrimRight(getenv("EDGE_TS_BASE_URL"), "/"),
 		EdgeHLSBaseURL:     strings.TrimRight(getenv("EDGE_HLS_BASE_URL"), "/"),
 		SRSAPIURL:          strings.TrimRight(getenv("SRS_API_URL"), "/"),
+		SRSTSAPIURL:        strings.TrimRight(getenv("SRS_TS_API_URL"), "/"),
 		SRSHLSURL:          strings.TrimRight(getenv("SRS_HLS_URL"), "/"),
 		TokenTTL:           5 * time.Minute,
 		HLSTokenTTL:        6 * time.Hour,
@@ -99,6 +102,7 @@ func Load(getenv func(string) string) (Config, error) {
 		"EDGE_TS_BASE_URL":  c.EdgeTSBaseURL,
 		"EDGE_HLS_BASE_URL": c.EdgeHLSBaseURL,
 		"SRS_API_URL":       c.SRSAPIURL,
+		"SRS_TS_API_URL":    c.SRSTSAPIURL,
 		"SRS_HLS_URL":       c.SRSHLSURL,
 	} {
 		u, err := url.Parse(v)

@@ -27,16 +27,22 @@ const (
 
 const maxFormBytes = 64 << 10
 
+// ConnectionCounter, bir izleyicinin süren bağlantılarını sayar (bkz. session.Manager).
+type ConnectionCounter interface {
+	ActiveCount(ctx context.Context, viewerID int64) (int, error)
+}
+
 type Handler struct {
-	store *store.Store
-	auth  *auth.Authenticator
-	base  *url.URL
-	now   func() time.Time
+	store    *store.Store
+	auth     *auth.Authenticator
+	sessions ConnectionCounter
+	base     *url.URL
+	now      func() time.Time
 }
 
 // New: publicBaseURL, oynatıcıların sunucuya ulaştığı dış adrestir (ör. http://tv.example.com:8000).
-func New(s *store.Store, a *auth.Authenticator, publicBaseURL *url.URL, now func() time.Time) *Handler {
-	return &Handler{store: s, auth: a, base: publicBaseURL, now: now}
+func New(s *store.Store, a *auth.Authenticator, sessions ConnectionCounter, publicBaseURL *url.URL, now func() time.Time) *Handler {
+	return &Handler{store: s, auth: a, sessions: sessions, base: publicBaseURL, now: now}
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
@@ -120,18 +126,23 @@ func (h *Handler) playerAPI(w http.ResponseWriter, r *http.Request) {
 	case "get_short_epg", "get_simple_data_table":
 		writeJSON(w, map[string]any{"epg_listings": []struct{}{}})
 	default:
-		writeJSON(w, map[string]any{"user_info": h.userInfo(v, now), "server_info": h.serverInfo(now)})
+		active, err := h.sessions.ActiveCount(r.Context(), v.ID)
+		if err != nil {
+			internalError(w, err)
+			return
+		}
+		writeJSON(w, map[string]any{"user_info": h.userInfo(v, active, now), "server_info": h.serverInfo(now)})
 	}
 }
 
-func (h *Handler) userInfo(v store.Viewer, now time.Time) userInfo {
+func (h *Handler) userInfo(v store.Viewer, activeConnections int, now time.Time) userInfo {
 	info := userInfo{
 		Username:             v.Username,
 		Password:             v.Password,
 		Auth:                 1,
 		Status:               status(v, now),
 		IsTrial:              "0",
-		ActiveCons:           "0",
+		ActiveCons:           strconv.Itoa(activeConnections),
 		CreatedAt:            strconv.FormatInt(v.CreatedAt.Unix(), 10),
 		MaxConnections:       strconv.Itoa(v.MaxConnections),
 		AllowedOutputFormats: []string{"m3u8", "ts"},

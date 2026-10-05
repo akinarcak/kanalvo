@@ -22,6 +22,7 @@ services:
       DATABASE_URL: postgres://streamhub:streamhub@postgres:5432/streamhub?sslmode=disable
       SRS_API_URL: http://srs:1985
       SRS_HLS_URL: http://srs:8080
+      SRS_TS_API_URL: http://srs-ts:1985
       TOKEN_KEY: ${TOKEN_KEY}
       HOOK_SECRET: ${HOOK_SECRET}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}

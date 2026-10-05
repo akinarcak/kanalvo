@@ -102,3 +102,15 @@ Reddedilen sorgu satırı SRS içinden kapatılamıyor. Sonuçları:
 
 Bu yüzden SRS kapsayıcılarının logları gizli veri sayılmalı: erişimi kısıtlanmalı ve üçüncü
 taraf log servislerine gönderilmemelidir. API logları hiçbir gizli değer içermez.
+
+## Bağlantı listesi ve bağlantı kesme (2026-10-05, Plan 3)
+
+Hem origin hem `srs-ts` üzerinde ölçüldü:
+
+| İstek | Gözlenen |
+|---|---|
+| `GET /api/v1/clients/?count=N` | `clients[]` dizisi; her kayıtta `id`, `ip`, `name` (kanal no), `type`, `publish` (yayıncı mı). HTTP ile `.ts` izleyen istemcinin türü `flv-play`; origin'in ilettiği yayın `srs-ts` üzerinde `flash-publish` olarak görünür |
+| `DELETE /api/v1/clients/<id>`, `.ts` izleyicisi | `{"code":0}`; izleyicinin bağlantısı yaklaşık 2 saniye içinde koptu |
+| `DELETE /api/v1/clients/<id>`, yayıncı (origin) | `{"code":0}`; FFmpeg çıktı, kanal çevrimdışı oldu ("yayın bitti" bildirimi geldi) |
+
+Kimlik, "izleme başladı" sorgusundaki `client_id` ile aynıdır.

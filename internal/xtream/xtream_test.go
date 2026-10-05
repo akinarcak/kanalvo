@@ -13,6 +13,8 @@ import (
 
 	"streamhub/internal/auth"
 	"streamhub/internal/ratelimit"
+	"streamhub/internal/session"
+	"streamhub/internal/session/sessiontest"
 	"streamhub/internal/store"
 	"streamhub/internal/testdb"
 	"streamhub/internal/xtream"
@@ -28,6 +30,7 @@ type fixture struct {
 	t      *testing.T
 	store  *store.Store
 	mux    *http.ServeMux
+	manager *session.Manager
 	t1, t2 int64
 	spor   int64
 	k1, k2 int64
@@ -64,7 +67,9 @@ func setup(t *testing.T) *fixture {
 
 	base := must(url.Parse("http://tv.example.com:8000"))
 	authn := auth.New(s, ratelimit.New(maxFailures, time.Minute, time.Now), false)
-	xtream.New(s, authn, base, func() time.Time { return now }).Register(f.mux)
+	srs := &sessiontest.FakeSRS{}
+	f.manager = session.New(s, srs, srs, 30*time.Second, 6*time.Hour)
+	xtream.New(s, authn, f.manager, base, func() time.Time { return now }).Register(f.mux)
 	return f
 }
 
@@ -130,6 +135,21 @@ func TestAccountInfo(t *testing.T) {
 		if got, ok := a.ServerInfo[k]; !ok || got != want {
 			t.Errorf("server_info.%s = %#v, beklenen %#v", k, got, want)
 		}
+	}
+}
+
+func TestAccountInfoReportsActiveConnections(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	if err := f.manager.TouchHLS(ctx, f.ali, f.k1, "aa", "1.1.1.1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.manager.OpenTS(ctx, f.ali, f.k2, "c1", "1.1.1.1"); err != nil {
+		t.Fatal(err)
+	}
+	a := decode[account](t, f.api(""))
+	if a.UserInfo["active_cons"] != "2" {
+		t.Fatalf("active_cons = %#v, beklenen \"2\"", a.UserInfo["active_cons"])
 	}
 }
 
@@ -404,7 +424,7 @@ func TestHTTPSBaseURL(t *testing.T) {
 	f := setup(t)
 	mux := http.NewServeMux()
 	authn := auth.New(f.store, ratelimit.New(maxFailures, time.Minute, time.Now), false)
-	xtream.New(f.store, authn, must(url.Parse("https://tv.example.com")), func() time.Time { return now }).Register(mux)
+	xtream.New(f.store, authn, f.manager, must(url.Parse("https://tv.example.com")), func() time.Time { return now }).Register(mux)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/player_api.php?username=ali&password=pw", nil))

@@ -2,7 +2,7 @@
 //
 // SRS, HLS parçalarını hiçbir denetim yapmadan sunar ve parça adları tahmin edilebilir
 // (bkz. docs/srs-findings.md). Bu yüzden SRS'in HTTP portu dışarıya açılmaz; her HLS isteği
-// buradan geçer, imza ve izleyici durumu her seferinde doğrulanır.
+// buradan geçer; imza, izleyici durumu ve bağlantı limiti her seferinde doğrulanır.
 package hlsgw
 
 import (
@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"streamhub/internal/clientip"
+	"streamhub/internal/session"
 	"streamhub/internal/store"
 	"streamhub/internal/token"
 )
@@ -24,15 +26,18 @@ import (
 var filePattern = regexp.MustCompile(`^([1-9][0-9]*)(\.m3u8|-[0-9]+\.ts)$`)
 
 type Handler struct {
-	store  *store.Store
-	signer *token.Signer
-	now    func() time.Time
-	proxy  *httputil.ReverseProxy
+	store             *store.Store
+	signer            *token.Signer
+	sessions          *session.Manager
+	trustProxyHeaders bool
+	now               func() time.Time
+	proxy             *httputil.ReverseProxy
 }
 
 // New, upstream olarak SRS HTTP sunucusunun iç adresini alır. SRS upstreamTimeout içinde
-// yanıt vermeye başlamazsa istek 502 ile sonlanır.
-func New(s *store.Store, signer *token.Signer, upstream *url.URL, upstreamTimeout time.Duration, now func() time.Time) *Handler {
+// yanıt vermeye başlamazsa istek 502 ile sonlanır. trustProxyHeaders için bkz. clientip.Key.
+func New(s *store.Store, signer *token.Signer, sessions *session.Manager, upstream *url.URL,
+	upstreamTimeout time.Duration, trustProxyHeaders bool, now func() time.Time) *Handler {
 	base := strings.TrimRight(upstream.Path, "/")
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = upstreamTimeout
@@ -50,7 +55,7 @@ func New(s *store.Store, signer *token.Signer, upstream *url.URL, upstreamTimeou
 			http.Error(w, "bad gateway", http.StatusBadGateway)
 		},
 	}
-	return &Handler{store: s, signer: signer, now: now, proxy: proxy}
+	return &Handler{store: s, signer: signer, sessions: sessions, trustProxyHeaders: trustProxyHeaders, now: now, proxy: proxy}
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
@@ -99,6 +104,18 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ch.Live {
 		http.NotFound(w, r)
+		return
+	}
+
+	// Oturum kimliği (imzadaki anahtar, istemci adresi) çiftidir: paylaşılan bir adres başka
+	// yerden açılırsa ayrı bir bağlantı sayılır ve limit doluysa en eski bağlantının yerini alır.
+	err = h.sessions.TouchHLS(r.Context(), v.ID, ch.ID, claims.Session, clientip.Key(r, h.trustProxyHeaders))
+	switch {
+	case errors.Is(err, store.ErrSessionRevoked), errors.Is(err, store.ErrTenantConnectionLimit):
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	case err != nil:
+		internalError(w, err)
 		return
 	}
 	h.proxy.ServeHTTP(w, r)

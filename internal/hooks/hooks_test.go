@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"streamhub/internal/hooks"
+	"streamhub/internal/session"
+	"streamhub/internal/session/sessiontest"
 	"streamhub/internal/store"
 	"streamhub/internal/testdb"
 	"streamhub/internal/token"
@@ -24,6 +26,7 @@ type fixture struct {
 	store   *store.Store
 	signer  *token.Signer
 	mux     *http.ServeMux
+	srs     *sessiontest.FakeSRS
 	tenant  int64
 	channel int64
 	viewer  int64
@@ -42,7 +45,9 @@ func setup(t *testing.T) *fixture {
 	f.tenant = must(f.store.CreateTenant(ctx, "t"))
 	f.channel = must(f.store.CreateChannel(ctx, f.tenant, "c", "sek"))
 	f.viewer = must(f.store.CreateViewer(ctx, f.tenant, "ali", "pw", 1))
-	hooks.New(f.store, f.signer, func() time.Time { return now }).Register(f.mux, hookSecret)
+	f.srs = &sessiontest.FakeSRS{}
+	sessions := session.New(f.store, f.srs, f.srs, 30*time.Second, 6*time.Hour)
+	hooks.New(f.store, f.signer, sessions, func() time.Time { return now }).Register(f.mux, hookSecret)
 	return f
 }
 
@@ -76,7 +81,15 @@ func (f *fixture) tokenFor(viewer, channel int64, exp time.Time) string {
 }
 
 func (f *fixture) play(stream, param string) int {
-	return f.post(hookSecret, "play", event("p1", "live", stream, param))
+	return f.playAs("p1", stream, param)
+}
+
+func (f *fixture) playAs(client, stream, param string) int {
+	return f.post(hookSecret, "play", event(client, "live", stream, param))
+}
+
+func (f *fixture) sessions(viewer int64) int {
+	return must(f.store.ActiveSessionCount(context.Background(), viewer, 30*time.Second))
 }
 
 func TestPublishAcceptsValidSecret(t *testing.T) {
@@ -273,6 +286,83 @@ func TestPlayRejectsOfflineChannel(t *testing.T) {
 	param := f.tokenFor(f.viewer, f.channel, now.Add(time.Minute))
 	if code := f.play(fmt.Sprint(f.channel), param); code != http.StatusForbidden {
 		t.Fatalf("durum %d", code)
+	}
+}
+
+func TestPlayOpensASessionAndStopClosesIt(t *testing.T) {
+	f := setup(t)
+	f.publish("a", "?secret=sek")
+	ch := fmt.Sprint(f.channel)
+	if code := f.play(ch, f.tokenFor(f.viewer, f.channel, now.Add(time.Minute))); code != http.StatusOK {
+		t.Fatalf("durum %d", code)
+	}
+	if n := f.sessions(f.viewer); n != 1 {
+		t.Fatalf("izleme başlayınca oturum açılmalı: %d", n)
+	}
+	if code := f.post(hookSecret, "stop", event("p1", "live", ch, "")); code != http.StatusOK {
+		t.Fatalf("durum %d", code)
+	}
+	if n := f.sessions(f.viewer); n != 0 {
+		t.Fatalf("izleme bitince oturum kapanmalı: %d", n)
+	}
+}
+
+func TestRejectedPlayOpensNoSession(t *testing.T) {
+	f := setup(t)
+	f.publish("a", "?secret=sek")
+	f.play(fmt.Sprint(f.channel), "?token=1.1.1.AAAA")
+	if n := f.sessions(f.viewer); n != 0 {
+		t.Fatalf("reddedilen izleme oturum açmamalı: %d", n)
+	}
+}
+
+func TestPlayBeyondConnectionLimitKicksTheOldestConnection(t *testing.T) {
+	f := setup(t) // izleyicinin bağlantı limiti 1
+	f.publish("a", "?secret=sek")
+	ch, param := fmt.Sprint(f.channel), f.tokenFor(f.viewer, f.channel, now.Add(time.Minute))
+	for _, client := range []string{"p1", "p2"} {
+		if code := f.playAs(client, ch, param); code != http.StatusOK {
+			t.Fatalf("%s: durum %d", client, code)
+		}
+	}
+	if f.srs.Kicked() != "[p1]" {
+		t.Fatalf("eski bağlantı kesilmeli: %s", f.srs.Kicked())
+	}
+	if n := f.sessions(f.viewer); n != 1 {
+		t.Fatalf("limit 1 iken etkin oturum sayısı %d", n)
+	}
+}
+
+func TestPlayRejectedWhenTenantConnectionQuotaIsFull(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	f.publish("a", "?secret=sek")
+	if err := f.store.SetTenantQuotas(ctx, f.tenant, store.Quotas{MaxChannels: 10, MaxViewers: 10, MaxConnections: 1}); err != nil {
+		t.Fatal(err)
+	}
+	other := must(f.store.CreateViewer(ctx, f.tenant, "veli", "pw", 1))
+	ch := fmt.Sprint(f.channel)
+	if code := f.playAs("p1", ch, f.tokenFor(other, f.channel, now.Add(time.Minute))); code != http.StatusOK {
+		t.Fatalf("ilk izleyici: durum %d", code)
+	}
+	if code := f.playAs("p2", ch, f.tokenFor(f.viewer, f.channel, now.Add(time.Minute))); code != http.StatusForbidden {
+		t.Fatalf("kota doluyken ikinci izleyici reddedilmeli: durum %d", code)
+	}
+	if f.srs.Kicked() != "[]" {
+		t.Fatalf("kota yüzünden kimse yerinden edilmemeli: %s", f.srs.Kicked())
+	}
+}
+
+// Origin'e RTMP ile bağlanıp izlemek bir izleyici yolu değildir; geçerli imzayla bile reddedilir.
+func TestOriginPlayIsAlwaysRejected(t *testing.T) {
+	f := setup(t)
+	f.publish("a", "?secret=sek")
+	body := event("p1", "live", fmt.Sprint(f.channel), f.tokenFor(f.viewer, f.channel, now.Add(time.Minute)))
+	if code := f.post(hookSecret, "play-origin", body); code != http.StatusForbidden {
+		t.Fatalf("durum %d", code)
+	}
+	if n := f.sessions(f.viewer); n != 0 {
+		t.Fatalf("oturum açılmamalı: %d", n)
 	}
 }
 

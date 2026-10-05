@@ -37,6 +37,22 @@ docker compose exec -T api streamhub seed-dev
 Telefondaki veya televizyondaki bir oynatıcıdan denemek için `.env` içindeki `PUBLIC_BASE_URL`,
 `EDGE_TS_BASE_URL` ve `EDGE_HLS_BASE_URL` adreslerinde `localhost` yerine bilgisayarın ağ adresini yazın.
 
+## Bağlantı limiti ve askıya alma
+
+- Her izleyicinin bir bağlantı limiti vardır (`seed-dev` ile oluşturulan izleyicide 1). Limit doluyken
+  yeni bir izleme başlarsa en eski izleme kesilir; böylece kanal değiştiren izleyici beklemez,
+  hesabını paylaşanlar ise birbirini düşürür.
+- Paylaşılan bir HLS adresi başka bir ağdan açılırsa ayrı bir bağlantı sayılır.
+- Yayıncının toplam bağlantı kotası doluysa yeni izleyici reddedilir (kimse düşürülmez).
+- Bir yayıncıyı askıya almak için:
+
+  ```bash
+  docker compose exec -T api streamhub set-tenant-status <tenant_id> suspended
+  ```
+
+  Süren yayınları ve izleyicilerinin bağlantıları birkaç saniye içinde kesilir. Geri almak için
+  `active` yazın.
+
 ## Ayarlar
 
 | Değişken | Anlamı | Varsayılan |

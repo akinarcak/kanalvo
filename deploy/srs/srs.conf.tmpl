@@ -37,7 +37,8 @@ vhost __defaultVhost__ {
         enabled         on;
         on_publish      __HOOK_BASE__/publish;
         on_unpublish    __HOOK_BASE__/unpublish;
-        on_play         __HOOK_BASE__/play;
+        # Origin'e RTMP ile bağlanıp izlemek bir izleyici yolu değildir; API bu sorguyu her zaman reddeder.
+        on_play         __HOOK_BASE__/play-origin;
         on_stop         __HOOK_BASE__/stop;
     }
 }

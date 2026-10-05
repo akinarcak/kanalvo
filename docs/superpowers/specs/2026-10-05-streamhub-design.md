@@ -200,11 +200,15 @@ kanalları çevrimdışı yapar; SRS'e ulaşılamazsa hiçbir kanala dokunmaz.
 | Süresi dolmuş veya askıdaki izleyici, askıdaki yayıncının izleyicisi | Giriş yanıtı durumu bildirir (`auth: 1`, `status`: `Expired`, `Banned` veya `Disabled`); kanal listeleri boş döner, yayın isteği ve M3U 403 alır. Gerçek Xtream panelleri böyle davranır ve oynatıcılar izleyiciye "süre doldu" gibi anlamlı bir mesaj gösterir |
 | Aynı IP'den çok sayıda hatalı giriş | Pencere bitene kadar 429 (doğru şifreyle bile) |
 | İzleyici başka yayıncının kanalını ister | 404 |
-| Bağlantı limiti aşıldı | Yeni bağlantı 403; mevcut izleme sürer |
+| İzleyicinin bağlantı limiti dolu | Yeni izleme kabul edilir, en eski izleme kesilir. Boşta kalan HLS oturumu 30 saniye sayıldığı için "yeniyi reddet" kuralı kanal değiştirmeyi engellerdi; hesabını paylaşanlar birbirini düşürür |
+| Yayıncının toplam bağlantı kotası dolu | Yeni izleyici 403 alır; süren izlemeler etkilenmez |
+| Paylaşılan HLS adresi başka bir ağdan açıldı | Ayrı bağlantı sayılır; limit doluysa en eski bağlantının yerini alır ve yerinden edilen taraf aynı adresle geri dönemez |
 | Edge sağlık sinyali kesildi | Yönlendirmeden çıkar, sinyal dönünce geri eklenir |
 | Sağlıklı edge yok | 503 |
-| "İzleme bitti" bildirimi kayboldu | Son görülmesi eskiyen oturumlar periyodik temizlenir |
-| Yayıncı askıya alındı | Açık yayınları kesilir, izleyicileri giriş yapamaz |
+| "İzleme bitti" bildirimi kayboldu | `.ts` oturumları 5 saniyede bir SRS'in bağlantı listesiyle eşitlenir; SRS'e ulaşılamazsa oturum silinmez |
+| İzleyici askıya alındı veya süresi doldu | Süren `.ts` izlemesi birkaç saniye içinde kesilir; HLS bir sonraki istekte reddedilir |
+| Origin'e RTMP ile izleme denemesi | Geçerli imzayla bile reddedilir |
+| Yayıncı askıya alındı | Açık yayınları birkaç saniye içinde kesilir, izleyicileri izleyemez |
 | Geçersiz yayın anahtarı veya kota aşımı | SRS yayını reddeder |
 | Aynı kanala ikinci yayın bağlantısı | İkincisi reddedilir |
 

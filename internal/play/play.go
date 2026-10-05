@@ -2,6 +2,8 @@
 package play
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -92,10 +94,18 @@ func (h *Handler) target(viewerID, channelID int64, ext string, now time.Time) s
 	claims := token.Claims{ViewerID: viewerID, ChannelID: channelID}
 	if ext == "m3u8" {
 		claims.Kind, claims.ExpiresAt = token.KindHLS, now.Add(h.opts.HLSTokenTTL)
+		claims.Session = newSessionKey()
 		return fmt.Sprintf("%s/hls/%s/%d.m3u8", h.opts.HLSBaseURL, h.signer.Sign(claims), channelID)
 	}
 	claims.Kind, claims.ExpiresAt = token.KindTS, now.Add(h.opts.TSTokenTTL)
 	return fmt.Sprintf("%s/live/%d.ts?token=%s", h.opts.TSBaseURL, channelID, h.signer.Sign(claims))
+}
+
+// newSessionKey, bir HLS izlemesini diğerlerinden ayıran rastgele anahtarı üretir.
+func newSessionKey() string {
+	b := make([]byte, 12)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 // parseFile, "<kanal>", "<kanal>.ts" veya "<kanal>.m3u8" biçimini çözer; uzantısız ad .ts sayılır.

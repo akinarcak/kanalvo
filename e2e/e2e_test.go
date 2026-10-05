@@ -25,6 +25,7 @@ const (
 )
 
 type seed struct {
+	TenantID     int64  `json:"tenant_id"`
 	ChannelID    int64  `json:"channel_id"`
 	StreamSecret string `json:"stream_secret"`
 	Username     string `json:"username"`
@@ -92,8 +93,9 @@ func getJSON(t *testing.T, u string, v any) {
 
 type xtreamAccount struct {
 	UserInfo struct {
-		Auth   int    `json:"auth"`
-		Status string `json:"status"`
+		Auth       int    `json:"auth"`
+		Status     string `json:"status"`
+		ActiveCons string `json:"active_cons"`
 	} `json:"user_info"`
 	ServerInfo struct {
 		URL  string `json:"url"`
@@ -103,6 +105,49 @@ type xtreamAccount struct {
 
 func (s seed) xtreamURL(script, extra string) string {
 	return fmt.Sprintf("%s/%s?username=%s&password=%s%s", apiURL, script, s.Username, s.Password, extra)
+}
+
+// startPublisher, kanala FFmpeg kapsayıcısından sahte bir yayın başlatır.
+func startPublisher(t *testing.T, s seed) {
+	t.Helper()
+	compose(t, "--profile", "e2e", "run", "-d", "--rm", "--name", pubName, "ffmpeg",
+		"-re", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=25",
+		"-f", "lavfi", "-i", "sine=frequency=440",
+		"-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-g", "50", "-pix_fmt", "yuv420p",
+		"-c:a", "aac", "-f", "flv",
+		fmt.Sprintf("rtmp://srs/live/%d?secret=%s", s.ChannelID, s.StreamSecret))
+}
+
+func publisherRunning() bool {
+	out, _ := exec.Command("docker", "ps", "-q", "--filter", "name="+pubName).Output()
+	return strings.TrimSpace(string(out)) != ""
+}
+
+// watch, bir .ts yayınını bağlantı kopana kadar okur. started, ilk veri gelince; ended,
+// bağlantı sunucu tarafından kesilince kapanır.
+func watch(u string) (started, ended chan struct{}) {
+	started, ended = make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(ended)
+		resp, err := (&http.Client{}).Get(u)
+		if err != nil {
+			return
+		}
+		defer resp.Body.Close()
+		buf := make([]byte, 32<<10)
+		first := true
+		for {
+			n, err := resp.Body.Read(buf)
+			if n > 0 && first {
+				first = false
+				close(started)
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return started, ended
 }
 
 func (s seed) playURL(ext string) string {
@@ -177,12 +222,7 @@ func TestSingleChannelEndToEnd(t *testing.T) {
 		}
 	}
 
-	compose(t, "--profile", "e2e", "run", "-d", "--rm", "--name", pubName, "ffmpeg",
-		"-re", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=25",
-		"-f", "lavfi", "-i", "sine=frequency=440",
-		"-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-g", "50", "-pix_fmt", "yuv420p",
-		"-c:a", "aac", "-f", "flv",
-		fmt.Sprintf("rtmp://srs/live/%d?secret=%s", s.ChannelID, s.StreamSecret))
+	startPublisher(t, s)
 	t.Cleanup(func() { exec.Command("docker", "rm", "-f", pubName).Run() })
 
 	// Kesintisiz .ts
@@ -283,14 +323,59 @@ func TestSingleChannelEndToEnd(t *testing.T) {
 		}
 	}
 
-	// Origin'in RTMP portu dışarıya açıktır; izleme yalnızca geçerli .ts imzasıyla kabul edilmeli.
-	tsToken := tsLocation[strings.Index(tsLocation, "?token=")+len("?token="):]
-	if err := rtmpPlay(s.ChannelID, "?token="+tsToken); err != nil {
-		t.Fatalf("geçerli imzayla RTMP izleme çalışmalı (aksi halde aşağıdaki ret denetimleri anlamsız): %v", err)
+	// Bağlantı limiti (izleyicinin limiti 1): yeni bir izleme, süren en eski izlemenin yerini alır.
+	firstStarted, firstEnded := watch(s.playURL("ts"))
+	select {
+	case <-firstStarted:
+	case <-time.After(15 * time.Second):
+		t.Fatal("ilk .ts izlemesi başlamadı")
 	}
-	for _, query := range []string{"", "?token=" + forged} {
+	var busy xtreamAccount
+	getJSON(t, s.xtreamURL("player_api.php", ""), &busy)
+	if busy.UserInfo.ActiveCons != "1" {
+		t.Fatalf("süren bir izleme varken active_cons %q", busy.UserInfo.ActiveCons)
+	}
+	secondStarted, secondEnded := watch(s.playURL("ts"))
+	select {
+	case <-secondStarted:
+	case <-time.After(15 * time.Second):
+		t.Fatal("ikinci .ts izlemesi başlamadı (kanal değiştiren izleyici takılmamalı)")
+	}
+	select {
+	case <-firstEnded:
+	case <-time.After(15 * time.Second):
+		t.Fatal("limit 1 iken ilk .ts izlemesi kesilmedi")
+	}
+	select {
+	case <-secondEnded:
+		t.Fatal("yeni izleme de kesildi")
+	case <-time.After(3 * time.Second):
+	}
+
+	// Aynısı HLS için: yeni bir HLS adresi alınınca eskisi kullanılamaz olur (ve yukarıdaki .ts izlemesi kesilir).
+	oldPlaylist, oldURL := fetch(s.playURL("m3u8"), 64<<10)
+	if !isPlaylist(oldPlaylist) {
+		t.Fatal("HLS adresi çalma listesi döndürmedi")
+	}
+	if newPlaylist, _ := fetch(s.playURL("m3u8"), 64<<10); !isPlaylist(newPlaylist) {
+		t.Fatal("yeni HLS adresi kabul edilmeli")
+	}
+	if body, _ := fetch(oldURL.String(), 64<<10); isPlaylist(body) {
+		t.Fatal("limit 1 iken eski HLS adresi hâlâ çalışıyor")
+	}
+	select {
+	case <-secondEnded:
+	case <-time.After(15 * time.Second):
+		t.Fatal("HLS izlemesi başlayınca süren .ts izlemesi kesilmedi")
+	}
+
+	// Origin'in RTMP portu yalnızca yayıncılar içindir; izleme geçerli bir imzayla bile reddedilir.
+	tsToken := tsLocation[strings.Index(tsLocation, "?token=")+len("?token="):]
+	_, freshLocation := probe(t, s.playURL("ts"))
+	freshToken := freshLocation[strings.Index(freshLocation, "?token=")+len("?token="):]
+	for _, query := range []string{"", "?token=" + forged, "?token=" + freshToken} {
 		if err := rtmpPlay(s.ChannelID, query); err == nil {
-			t.Fatalf("imzasız veya sahte imzalı RTMP izleme kabul edildi: %q", query)
+			t.Fatal("origin üzerinden RTMP izleme kabul edildi")
 		}
 	}
 
@@ -309,6 +394,25 @@ func TestSingleChannelEndToEnd(t *testing.T) {
 	})
 	if body, _ := fetch(playlistURL.String(), 64<<10); isPlaylist(body) {
 		t.Fatal("yayın bittikten sonra eski HLS adresi çalma listesi döndürmemeli")
+	}
+
+	// Askıya alınan yayıncının süren yayını kesilir ve izleyicileri izleyemez.
+	startPublisher(t, s)
+	waitFor(t, "kanalın yeniden yayında görünmesi", 30*time.Second, func() bool {
+		code, _ := probe(t, s.playURL("ts"))
+		return code == http.StatusFound
+	})
+	compose(t, "exec", "-T", "api", "streamhub", "set-tenant-status", fmt.Sprint(s.TenantID), "suspended")
+	waitFor(t, "askıdaki yayıncının yayınının kesilmesi", 30*time.Second, func() bool { return !publisherRunning() })
+	for _, ext := range []string{"ts", "m3u8"} {
+		if code, _ := probe(t, s.playURL(ext)); code != http.StatusForbidden {
+			t.Fatalf("askıdaki yayıncının izleyicisi %s için 403 almalı, gelen %d", ext, code)
+		}
+	}
+	var disabled xtreamAccount
+	getJSON(t, s.xtreamURL("player_api.php", ""), &disabled)
+	if disabled.UserInfo.Status != "Disabled" {
+		t.Fatalf("askıdaki yayıncının izleyicisi için durum %q", disabled.UserInfo.Status)
 	}
 
 	// Kabul edilen yayın ve izlemeler hiçbir servisin loguna gizli değer bırakmamalı.

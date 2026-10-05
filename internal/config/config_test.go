@@ -19,6 +19,7 @@ func valid() map[string]string {
 		"EDGE_HLS_BASE_URL": "http://edge:8000/",
 		"PUBLIC_BASE_URL":   "http://tv.example.com:8000/",
 		"SRS_API_URL":       "http://srs:1985",
+		"SRS_TS_API_URL":    "http://srs-ts:1985/",
 		"SRS_HLS_URL":       "http://srs:8080/",
 	}
 }
@@ -33,6 +34,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if c.PublicBaseURL != "http://tv.example.com:8000" || c.TrustProxyHeaders || c.LoginMaxFailures != 20 || c.LoginFailureWindow != 5*time.Minute {
 		t.Fatalf("giriş ayarı varsayılanları yanlış: %+v", c)
+	}
+	if c.SRSTSAPIURL != "http://srs-ts:1985" {
+		t.Fatalf("SRS_TS_API_URL: %q", c.SRSTSAPIURL)
 	}
 	if c.EdgeTSBaseURL != "http://edge:8081" || c.EdgeHLSBaseURL != "http://edge:8000" || c.SRSHLSURL != "http://srs:8080" {
 		t.Fatalf("sondaki / silinmeli: %+v", c)
@@ -69,6 +73,7 @@ func TestLoadRejectsBadValues(t *testing.T) {
 		"eksik EDGE_TS_BASE_URL":  func(m map[string]string) { delete(m, "EDGE_TS_BASE_URL") },
 		"eksik EDGE_HLS_BASE_URL": func(m map[string]string) { delete(m, "EDGE_HLS_BASE_URL") },
 		"eksik SRS_API_URL":       func(m map[string]string) { delete(m, "SRS_API_URL") },
+		"eksik SRS_TS_API_URL":    func(m map[string]string) { delete(m, "SRS_TS_API_URL") },
 		"eksik SRS_HLS_URL":       func(m map[string]string) { delete(m, "SRS_HLS_URL") },
 		"bozuk SRS_HLS_URL":       func(m map[string]string) { m["SRS_HLS_URL"] = "srs:8080" },
 		"kısa TOKEN_KEY":          func(m map[string]string) { m["TOKEN_KEY"] = "short" },

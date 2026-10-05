@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"streamhub/internal/session"
 	"streamhub/internal/store"
 	"streamhub/internal/token"
 )
@@ -23,27 +24,35 @@ const app = "live"
 // Event, SRS'in gönderdiği gövdenin kullandığımız alanlarıdır.
 type Event struct {
 	ClientID string `json:"client_id"`
+	IP       string `json:"ip"`
 	App      string `json:"app"`
 	Stream   string `json:"stream"`
 	Param    string `json:"param"`
 }
 
 type Handler struct {
-	store  *store.Store
-	signer *token.Signer
-	now    func() time.Time
+	store    *store.Store
+	signer   *token.Signer
+	sessions *session.Manager
+	now      func() time.Time
 }
 
-func New(s *store.Store, signer *token.Signer, now func() time.Time) *Handler {
-	return &Handler{store: s, signer: signer, now: now}
+func New(s *store.Store, signer *token.Signer, sessions *session.Manager, now func() time.Time) *Handler {
+	return &Handler{store: s, signer: signer, sessions: sessions, now: now}
 }
 
+// Register, SRS'in çağırdığı olayları kaydeder:
+//
+//	publish, unpublish : origin'e gelen yayın
+//	play, stop         : .ts dağıtıcısındaki izleme
+//	play-origin        : origin'e RTMP ile izleme denemesi; her zaman reddedilir
 func (h *Handler) Register(mux *http.ServeMux, secret string) {
 	events := map[string]func(context.Context, Event) int{
-		"publish":   h.onPublish,
-		"unpublish": h.onUnpublish,
-		"play":      h.onPlay,
-		"stop":      func(context.Context, Event) int { return http.StatusOK },
+		"publish":     h.onPublish,
+		"unpublish":   h.onUnpublish,
+		"play":        h.onPlay,
+		"stop":        h.onStop,
+		"play-origin": func(context.Context, Event) int { return http.StatusForbidden },
 	}
 	mux.HandleFunc("POST /hooks/srs/{secret}/{event}", func(w http.ResponseWriter, r *http.Request) {
 		handle, known := events[r.PathValue("event")]
@@ -95,7 +104,7 @@ func (h *Handler) onUnpublish(ctx context.Context, ev Event) int {
 	return http.StatusOK
 }
 
-// onPlay, kesintisiz .ts ve RTMP izlemelerini yetkilendirir. HLS bu yoldan geçmez (bkz. hlsgw).
+// onPlay, kesintisiz .ts izlemesini yetkilendirir ve oturumunu açar. HLS bu yoldan geçmez (bkz. hlsgw).
 func (h *Handler) onPlay(ctx context.Context, ev Event) int {
 	id, ok := channelID(ev)
 	if !ok {
@@ -116,6 +125,21 @@ func (h *Handler) onPlay(ctx context.Context, ev Event) int {
 	}
 	if !v.Usable(now) || v.TenantID != ch.TenantID || !ch.Live {
 		return http.StatusForbidden
+	}
+	// İzleyici limitindeyse en eski bağlantısı kesilir; yayıncının kotası doluysa izleme reddedilir.
+	if err := h.sessions.OpenTS(ctx, v.ID, ch.ID, ev.ClientID, ev.IP); err != nil {
+		if errors.Is(err, store.ErrTenantConnectionLimit) || errors.Is(err, store.ErrSessionRevoked) {
+			return http.StatusForbidden
+		}
+		return failure(err)
+	}
+	return http.StatusOK
+}
+
+// onStop her zaman kabul eder; izleme zaten bitmiştir.
+func (h *Handler) onStop(ctx context.Context, ev Event) int {
+	if err := h.sessions.CloseTS(ctx, ev.ClientID); err != nil {
+		log.Printf("hooks: oturum kapatılamadı, eşitleme döngüsü temizleyecek: %v", err)
 	}
 	return http.StatusOK
 }

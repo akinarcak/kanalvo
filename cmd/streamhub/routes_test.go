@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"streamhub/internal/config"
+	"streamhub/internal/session"
+	"streamhub/internal/session/sessiontest"
 	"streamhub/internal/testdb"
 	"streamhub/internal/token"
 )
@@ -46,7 +48,9 @@ func TestPublicRoutesDoNotShadowEachOther(t *testing.T) {
 	}
 	upstream, _ := url.Parse("http://127.0.0.1:1")
 	public, _ := url.Parse(cfg.PublicBaseURL)
-	mux := publicMux(st, token.NewSigner([]byte(strings.Repeat("k", 32))), cfg, public, upstream)
+	srs := &sessiontest.FakeSRS{}
+	sessions := session.New(st, srs, srs, 30*time.Second, time.Hour)
+	mux := publicMux(st, token.NewSigner([]byte(strings.Repeat("k", 32))), sessions, cfg, public, upstream)
 
 	get := func(path string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()

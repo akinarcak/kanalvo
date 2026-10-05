@@ -121,6 +121,24 @@ func TestHLSRedirectsToGatewayWithTokenInPath(t *testing.T) {
 	f.checkClaims(tok, token.KindHLS, hlsTTL)
 }
 
+// Her HLS yönlendirmesi ayrı bir oturum anahtarı taşır; bağlantı limiti bunlarla sayılır.
+func TestEachHLSRedirectCarriesItsOwnSessionKey(t *testing.T) {
+	f := setup(t)
+	seen := map[string]bool{}
+	for i := 0; i < 3; i++ {
+		_, raw := f.redirect(fmt.Sprintf("%d.m3u8", f.channel))
+		tok := strings.TrimSuffix(strings.TrimPrefix(raw, hlsBase+"/hls/"), fmt.Sprintf("/%d.m3u8", f.channel))
+		claims, err := f.signer.Verify(tok, now)
+		if err != nil || len(claims.Session) < 16 {
+			t.Fatalf("oturum anahtarı eksik: %+v, %v", claims, err)
+		}
+		seen[claims.Session] = true
+	}
+	if len(seen) != 3 {
+		t.Fatalf("oturum anahtarları farklı olmalı: %v", seen)
+	}
+}
+
 func TestRejectsInvalidViewer(t *testing.T) {
 	ctx := context.Background()
 	cases := map[string]func(f *fixture) (user, pass string){
