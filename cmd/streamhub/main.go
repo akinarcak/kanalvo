@@ -21,6 +21,7 @@ import (
 	"streamhub/internal/auth"
 	"streamhub/internal/balancer"
 	"streamhub/internal/config"
+	"streamhub/internal/enroll"
 	"streamhub/internal/hlsgw"
 	"streamhub/internal/hooks"
 	"streamhub/internal/httpserve"
@@ -152,6 +153,9 @@ func publicMux(st *store.Store, signer *token.Signer, sessions *session.Manager,
 	gateway.Register(mux)
 	gateway.RegisterEdge(mux)
 	hook.RegisterEdge(mux)
+	enroll.New(st, enroll.Config{
+		PublicBaseURL: cfg.PublicBaseURL, IngestURL: cfg.IngestBaseURL, TrustProxyHeaders: cfg.TrustProxyHeaders,
+	}, func() string { return randomHex(24) }).Register(mux)
 	return mux
 }
 

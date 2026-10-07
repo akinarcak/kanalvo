@@ -1178,3 +1178,93 @@ dialog.modal::backdrop {
 .with-avatar {
   white-space: nowrap;
 }
+
+/* --- sunucu ekleme adımları --- */
+
+.enroll-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 1.1rem;
+}
+
+.enroll-steps li {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.8rem;
+  align-items: start;
+}
+
+.enroll-steps li > div {
+  min-width: 0;
+  display: grid;
+  gap: 0.6rem;
+  justify-items: start;
+}
+
+.enroll-steps li > div > form {
+  width: 100%;
+}
+
+.enroll-steps p {
+  margin: 0;
+}
+
+.enroll-steps li.current .step-mark {
+  border-color: var(--accent);
+}
+
+.enroll-steps li.done .step-mark {
+  background: var(--ok-text);
+  border-color: var(--ok-text);
+}
+
+.enroll-steps li:not(.current):not(.done) strong {
+  color: var(--muted);
+}
+
+pre.command {
+  margin: 0;
+  width: 100%;
+  padding: 0.75rem 0.85rem;
+  background: #141826;
+  color: #e7eaf2;
+  border-radius: 9px;
+  font: 13px/1.5 ui-monospace, "Cascadia Code", Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.waiting {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  color: var(--muted);
+}
+
+.waiting .pulse {
+  background: var(--accent);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+details.manual {
+  margin-bottom: 1rem;
+}
+
+details.manual > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.9rem;
+  padding: 0.3rem 0.2rem;
+  width: max-content;
+}
+
+details.manual > summary:hover {
+  color: var(--text);
+}
+
+details.manual[open] > summary {
+  margin-bottom: 0.6rem;
+}

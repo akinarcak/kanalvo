@@ -1,0 +1,98 @@
+#!/bin/sh
+# StreamHub uzak sunucu kurulumu.
+#
+# Docker yoksa kurar, kurulum dosyalarını yazar, sunucuyu ana sunucuya kaydeder ve başlatır.
+# Kurulum kodu tek kullanımlıktır: betik yeniden çalıştırılacaksa panelden yeni kod alınır.
+#
+#   EDGE_PORT            izleyicilere açılacak port (varsayılan 80)
+#   STREAMHUB_EDGE_DIR   kurulum klasörü (varsayılan /opt/streamhub-edge)
+set -eu
+
+CONTROL_URL={{.ControlURL}}
+TOKEN={{.Token}}
+DIR="${STREAMHUB_EDGE_DIR:-/opt/streamhub-edge}"
+PORT="${EDGE_PORT:-80}"
+
+say() { printf 'streamhub: %s\n' "$*"; }
+die() {
+  printf 'streamhub: HATA: %s\n' "$*" >&2
+  exit 1
+}
+
+[ "$(id -u)" = 0 ] || die "Bu betik yönetici olarak çalıştırılmalı (komutun sonu: | sudo sh)."
+command -v curl >/dev/null 2>&1 || die "curl bulunamadı."
+case "$PORT" in
+  '' | *[!0-9]*) die "EDGE_PORT bir port numarası olmalı: $PORT" ;;
+esac
+
+if ! command -v docker >/dev/null 2>&1; then
+  say "Docker kuruluyor…"
+  curl -fsSL https://get.docker.com | sh
+fi
+docker compose version >/dev/null 2>&1 || die "Docker Compose eklentisi bulunamadı (docker compose)."
+
+say "Dosyalar $DIR klasörüne yazılıyor…"
+mkdir -p "$DIR"
+cd "$DIR"
+
+cat > docker-compose.yml <<'STREAMHUB_EOF'
+{{.Compose}}
+STREAMHUB_EOF
+
+cat > nginx.conf.template <<'STREAMHUB_EOF'
+{{.Nginx}}
+STREAMHUB_EOF
+
+cat > srs-edge.conf.tmpl <<'STREAMHUB_EOF'
+{{.SRS}}
+STREAMHUB_EOF
+
+cat > kaldir.sh <<'STREAMHUB_EOF'
+#!/bin/sh
+# Bu sunucudaki StreamHub kurulumunu durdurur ve klasörünü siler. Paneldeki kaydı ayrıca silin.
+set -eu
+dir=$(cd "$(dirname "$0")" && pwd)
+cd "$dir"
+docker compose down -v
+cd /
+rm -rf "$dir"
+echo "streamhub: kaldırıldı."
+STREAMHUB_EOF
+chmod +x kaldir.sh
+
+say "Sunucu ana sunucuya kaydediliyor…"
+# Ana sunucu bu isteğin geldiği adresi sunucunun adresi sayar. Docker kapsayıcıları dışarıya IPv4
+# ile çıktığı için önce IPv4 denenir; ana sunucuya yalnızca IPv6 ile ulaşılıyorsa o kullanılır.
+enroll() { curl -fsS --max-time 30 "$@" -X POST --data "port=$PORT" "$CONTROL_URL/edge/enroll/$TOKEN"; }
+settings=$(enroll -4 2>/dev/null) || settings=$(enroll) ||
+  die "Kayıt başarısız: kurulum kodu geçersiz, kullanılmış ya da süresi dolmuş olabilir. Panelden yeni bir kod alın."
+
+# Ayarlar sunucunun anahtarını içerir; yalnızca yönetici okuyabilir.
+(
+  umask 077
+  printf '%s\n' "$settings" > .env
+)
+
+say "Servisler başlatılıyor…"
+docker compose up -d
+
+key=$(sed -n 's/^EDGE_KEY=//p' .env)
+ready=no
+tries=0
+# Yoklama süreyle sınırlıdır: yanıt vermeyen bir port betiği bekletmemelidir.
+while [ "$tries" -lt 15 ]; do
+  if curl -fsS --max-time 3 -o /dev/null -H "X-Edge-Key: $key" "http://localhost:$PORT/_srs/api/v1/versions" 2>/dev/null; then
+    ready=yes
+    break
+  fi
+  tries=$((tries + 1))
+  sleep 1
+done
+
+if [ "$ready" = yes ]; then
+  say "Kurulum tamam. Panele dönüp sunucunun adını ve izleyici adresini onaylayın."
+else
+  say "Servisler başlatıldı ama henüz yanıt vermiyor. Durumu görmek için: cd $DIR && docker compose logs"
+  say "Panelde sunucu \"Sağlıklı\" göründüğünde adını ve izleyici adresini onaylayabilirsiniz."
+fi
+say "Kaldırmak için: sudo sh $DIR/kaldir.sh"

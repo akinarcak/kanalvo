@@ -170,3 +170,13 @@ export interface Edge {
   // Uzak sunucunun .env dosyasına yazılacak satırlar; yerel sunucuda yoktur.
   setup?: string;
 }
+
+// Enrollment, yeni bir sunucuyu tek komutla kurmak için alınan tek kullanımlık kodun durumudur.
+// command yalnızca kod üretildiğinde gelir; edge, cihaz kaydolunca dolar.
+export interface Enrollment {
+  id: number;
+  status: "waiting" | "enrolled" | "expired";
+  expires_at: string;
+  command?: string;
+  edge?: Edge;
+}

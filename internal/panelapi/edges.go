@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"strings"
+	"time"
 
+	"streamhub/internal/enroll"
 	"streamhub/internal/store"
 )
 
@@ -20,6 +21,8 @@ const (
 	maxEdgeWeight     = 1000
 	localEdgeFixed    = "Yerel sunucunun adresleri sunucu ayarlarından gelir; panelden değiştirilemez."
 	edgeNameTaken     = "Bu adla başka bir sunucu kayıtlı."
+	// enrollmentTTL, kurulum kodunun geçerlilik süresidir.
+	enrollmentTTL = 30 * time.Minute
 )
 
 type edgeJSON struct {
@@ -51,22 +54,9 @@ func (h *Handler) toEdgeJSON(e store.Edge, sessions int) edgeJSON {
 		out.LastSeenAt = &seen
 	}
 	if !e.Builtin {
-		out.Setup = fmt.Sprintf("CONTROL_URL=%s\nEDGE_KEY=%s\nORIGIN_RTMP=%s\n", h.cfg.PublicBaseURL, e.Key, originRTMP(h.cfg.IngestURL))
+		out.Setup = fmt.Sprintf("CONTROL_URL=%s\nEDGE_KEY=%s\nORIGIN_RTMP=%s\n", h.cfg.PublicBaseURL, e.Key, enroll.OriginRTMP(h.cfg.IngestURL))
 	}
 	return out
-}
-
-// originRTMP, yayın adresinden (rtmp://sunucu[:port]/live) edge'in çekeceği "sunucu:port" değerini üretir.
-func originRTMP(ingestURL string) string {
-	u, err := url.Parse(ingestURL)
-	if err != nil || u.Hostname() == "" {
-		return ""
-	}
-	port := u.Port()
-	if port == "" {
-		port = "1935"
-	}
-	return net.JoinHostPort(u.Hostname(), port)
 }
 
 func (h *Handler) edgeJSONByID(ctx context.Context, id int64) (edgeJSON, error) {
@@ -270,4 +260,64 @@ func cleanIP(raw string) (string, bool) {
 		return "", false
 	}
 	return ip.Unmap().String(), true
+}
+
+// --- kurulum kodu ---
+
+// enrollmentJSON, bir kurulum kodunun durumudur: "waiting" (cihaz bekleniyor), "enrolled" (cihaz
+// kaydoldu; Edge doludur) ya da "expired" (kullanılmadan süresi doldu).
+type enrollmentJSON struct {
+	ID        int64  `json:"id"`
+	Status    string `json:"status"`
+	ExpiresAt string `json:"expires_at"`
+	// Command yalnızca kod üretilirken döner: kod saklanmadığı için sonradan gösterilemez.
+	Command string    `json:"command,omitempty"`
+	Edge    *edgeJSON `json:"edge,omitempty"`
+}
+
+// adminCreateEnrollment, yeni bir sunucuyu tek komutla kurmak için tek kullanımlık kod üretir.
+func (h *Handler) adminCreateEnrollment(w http.ResponseWriter, r *http.Request, _ actor) {
+	token := randomHex(16)
+	id, err := h.store.CreateEdgeEnrollment(r.Context(), token, enrollmentTTL)
+	if err != nil {
+		h.internal(w, err)
+		return
+	}
+	en, err := h.store.EdgeEnrollmentByID(r.Context(), id)
+	if err != nil {
+		h.internal(w, err)
+		return
+	}
+	ok(w, http.StatusCreated, enrollmentJSON{
+		ID: id, Status: "waiting", ExpiresAt: formatTime(en.ExpiresAt), Command: enroll.Command(h.cfg.PublicBaseURL, token),
+	})
+}
+
+func (h *Handler) adminGetEnrollment(w http.ResponseWriter, r *http.Request, _ actor) {
+	id, valid := pathID(w, r)
+	if !valid {
+		return
+	}
+	en, err := h.store.EdgeEnrollmentByID(r.Context(), id)
+	if err != nil {
+		h.storeError(w, err, "")
+		return
+	}
+	out := enrollmentJSON{ID: en.ID, Status: "waiting", ExpiresAt: formatTime(en.ExpiresAt)}
+	switch {
+	case en.Expired:
+		out.Status = "expired"
+	case en.UsedAt != nil:
+		out.Status = "enrolled"
+		// Sunucu sonradan silindiyse kayıt "enrolled" kalır ama sunucusu yoktur.
+		if en.EdgeID != nil {
+			edge, err := h.edgeJSONByID(r.Context(), *en.EdgeID)
+			if err != nil {
+				h.storeError(w, err, "")
+				return
+			}
+			out.Edge = &edge
+		}
+	}
+	ok(w, http.StatusOK, out)
 }

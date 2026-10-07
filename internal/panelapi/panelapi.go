@@ -87,6 +87,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/admin/edges", h.as(roleAdmin, h.adminCreateEdge))
 	mux.HandleFunc("PATCH /api/admin/edges/{id}", h.as(roleAdmin, h.adminUpdateEdge))
 	mux.HandleFunc("DELETE /api/admin/edges/{id}", h.as(roleAdmin, h.adminDeleteEdge))
+	mux.HandleFunc("POST /api/admin/edge-enrollments", h.as(roleAdmin, h.adminCreateEnrollment))
+	mux.HandleFunc("GET /api/admin/edge-enrollments/{id}", h.as(roleAdmin, h.adminGetEnrollment))
 
 	mux.HandleFunc("GET /api/tenant/overview", h.as(roleTenant, h.overview))
 	mux.HandleFunc("GET /api/tenant/categories", h.as(roleTenant, h.listCategories))

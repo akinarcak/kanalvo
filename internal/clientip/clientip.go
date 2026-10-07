@@ -14,6 +14,12 @@ import (
 // trustProxyHeaders yalnızca API, X-Forwarded-For başlığını kendisi yazan bir vekilin
 // arkasındayken açılmalıdır; aksi halde istemci başlığı uydurarak kendini başkası gibi gösterebilir.
 func Key(r *http.Request, trustProxyHeaders bool) string {
+	return key(Addr(r, trustProxyHeaders))
+}
+
+// Addr, isteğin geldiği adresi olduğu gibi döner (Key'in aksine IPv6 adresini öneke indirmez).
+// Adres belirlenemezse geçersiz (sıfır) değer döner. trustProxyHeaders için bkz. Key.
+func Addr(r *http.Request, trustProxyHeaders bool) netip.Addr {
 	var ip netip.Addr
 	if ap, err := netip.ParseAddrPort(r.RemoteAddr); err == nil {
 		ip = ap.Addr()
@@ -26,7 +32,7 @@ func Key(r *http.Request, trustProxyHeaders bool) string {
 			ip = parsed
 		}
 	}
-	return key(ip)
+	return ip.Unmap()
 }
 
 // Normalize, metin olarak verilen bir adresi Key ile aynı biçime çevirir. Adres, güvenilen bir

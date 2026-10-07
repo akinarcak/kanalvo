@@ -2,10 +2,12 @@ package panelapi_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 
+	"streamhub/internal/store"
 	"streamhub/internal/testdb"
 )
 
@@ -243,4 +245,87 @@ func TestControlAddressFollowsTheViewerAddressUnlessSetSeparately(t *testing.T) 
 	if e.BaseURL != "https://ucuncu.example.com" || e.ControlURL != "http://10.0.0.5" {
 		t.Fatalf("ayrı verilmiş yönetim adresi korunmalıydı: %+v", e)
 	}
+}
+
+type enrollmentJSON struct {
+	ID        int64     `json:"id"`
+	Status    string    `json:"status"`
+	ExpiresAt string    `json:"expires_at"`
+	Command   string    `json:"command"`
+	Edge      *edgeJSON `json:"edge"`
+}
+
+// Yönetici bir kurulum kodu alır; cihaz kodla kaydolunca panel sunucuyu görür ve yönetici
+// bilgilerini onaylayıp etkinleştirir.
+func TestAdminEnrollsAServerWithAOneTimeCode(t *testing.T) {
+	f := setup(t)
+	admin := f.admin()
+	ctx := context.Background()
+
+	var created enrollmentJSON
+	admin.want(admin.post("/api/admin/edge-enrollments", nil), http.StatusCreated).into(t, &created)
+	prefix, suffix := "curl -fsSL http://tv.example.com:8000/edge/install/", " | sudo sh"
+	if created.Status != "waiting" || !strings.HasPrefix(created.Command, prefix) || !strings.HasSuffix(created.Command, suffix) || created.ExpiresAt == "" {
+		t.Fatalf("kurulum kodu: %+v", created)
+	}
+	token := strings.TrimSuffix(strings.TrimPrefix(created.Command, prefix), suffix)
+	if len(token) != 32 {
+		t.Fatalf("kod 32 karakter olmalı: %q", token)
+	}
+
+	path := fmt.Sprintf("/api/admin/edge-enrollments/%d", created.ID)
+	var state enrollmentJSON
+	admin.want(admin.get(path), http.StatusOK).into(t, &state)
+	if state.Status != "waiting" || state.Edge != nil || state.Command != "" {
+		t.Fatalf("cihaz bağlanmadan önce (komut yeniden gösterilmez): %+v", state)
+	}
+
+	// Cihaz kodla kaydolur.
+	edgeID, err := f.store.RedeemEdgeEnrollment(ctx, token, store.NewEdge{
+		Name: "Sunucu 203.0.113.20", BaseURL: "http://203.0.113.20", ControlURL: "http://203.0.113.20", Key: "anahtar", PullIP: "203.0.113.20", Weight: 100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin.want(admin.get(path), http.StatusOK).into(t, &state)
+	if state.Status != "enrolled" || state.Edge == nil || state.Edge.ID != edgeID || state.Edge.Enabled || state.Edge.BaseURL != "http://203.0.113.20" {
+		t.Fatalf("cihaz kaydolduktan sonra: %+v edge=%+v", state, state.Edge)
+	}
+
+	// Yönetici bilgileri onaylar: sunucu etkinleşir.
+	var e edgeJSON
+	admin.want(admin.patch(fmt.Sprintf("/api/admin/edges/%d", edgeID), map[string]any{
+		"name": "Frankfurt", "base_url": "http://fra.example.com", "enabled": true,
+	}), http.StatusOK).into(t, &e)
+	if !e.Enabled || e.Name != "Frankfurt" || e.BaseURL != "http://fra.example.com" || e.ControlURL != "http://fra.example.com" || e.PullIP != "203.0.113.20" {
+		t.Fatalf("onaylanan sunucu: %+v", e)
+	}
+
+	// Sunucu silinse de kodun durumu sorulabilir.
+	admin.want(admin.delete(fmt.Sprintf("/api/admin/edges/%d", edgeID)), http.StatusNoContent)
+	var after enrollmentJSON
+	admin.want(admin.get(path), http.StatusOK).into(t, &after)
+	if after.Status != "enrolled" || after.Edge != nil {
+		t.Fatalf("sunucusu silinen kod: %+v", after)
+	}
+}
+
+func TestEnrollmentCodeExpiresAndIsAdminOnly(t *testing.T) {
+	f := setup(t)
+	admin := f.admin()
+	var created enrollmentJSON
+	admin.want(admin.post("/api/admin/edge-enrollments", nil), http.StatusCreated).into(t, &created)
+	path := fmt.Sprintf("/api/admin/edge-enrollments/%d", created.ID)
+
+	testdb.Exec(t, `UPDATE edge_enrollments SET expires_at = now() - interval '1 second'`)
+	var state enrollmentJSON
+	admin.want(admin.get(path), http.StatusOK).into(t, &state)
+	if state.Status != "expired" {
+		t.Fatalf("süresi dolan kod: %+v", state)
+	}
+	admin.want(admin.get("/api/admin/edge-enrollments/999999"), http.StatusNotFound)
+
+	tenant, _, _ := f.newTenant("Kanal A", "a@example.com")
+	tenant.want(tenant.post("/api/admin/edge-enrollments", nil), http.StatusForbidden)
+	tenant.want(tenant.get(path), http.StatusForbidden)
 }

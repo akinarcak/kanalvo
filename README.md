@@ -107,12 +107,29 @@ Telefondaki veya televizyondaki bir oynatıcıdan denemek için `.env` içindeki
 İzleyiciler birden fazla sunucuya dağıtılabilir. Ana sunucudaki dağıtım "Yerel" adıyla hazır gelir;
 yeni bir sunucu eklemek için:
 
-1. Panelde **Sunucular** sayfasında sunucuyu ekleyin: bir ad, izleyicilerin ulaşacağı adres
-   (ör. `http://edge1.example.com`) ve sunucunun IP adresi.
-2. Yeni sunucuya depodaki `deploy/edge` klasörünü kopyalayın. Panelin gösterdiği üç satırı
-   (`CONTROL_URL`, `EDGE_KEY`, `ORIGIN_RTMP`) o klasörde `.env` dosyasına yazın.
-3. Sunucuda `docker compose up -d` çalıştırın. Yaklaşık 10 saniye içinde panelde "Sağlıklı" görünür
-   ve izleyici almaya başlar.
+1. Panelde **Sunucular** sayfasında **Sunucu ekle**'ye basın. Panel tek kullanımlık bir kurulum
+   komutu gösterir (30 dakika geçerlidir):
+
+   ```bash
+   curl -fsSL http://tv.example.com:8000/edge/install/<kod> | sudo sh
+   ```
+
+2. Komutu yeni sunucuda (Linux) çalıştırın. Betik Docker yoksa kurar, dosyaları
+   `/opt/streamhub-edge` altına yazar, sunucuyu ana sunucuya kaydeder ve servisleri başlatır.
+   İzleyicilere 80 numaralı port açılır; başka bir port için komutun sonunu
+   `| sudo EDGE_PORT=8080 sh` yapın.
+3. Panel sunucunun bağlandığını kendiliğinden görür ve adını, izleyici adresini sorar. Adres,
+   sunucunun bağlandığı IP ile dolu gelir; alan adınız varsa değiştirin. **Sunucuyu ekle** deyince
+   sunucu izleyici almaya başlar. Onaylanmayan sunucu listede "Devre dışı" bekler.
+
+| Komut | Onay |
+|---|---|
+| ![Kurulum komutu](docs/ekran-goruntuleri/yonetici-sunucu-ekle-komut.png) | ![Bilgilerin onayı](docs/ekran-goruntuleri/yonetici-sunucu-ekle-onay.png) |
+
+Sunucuyu kaldırmak için orada `sudo sh /opt/streamhub-edge/kaldir.sh` çalıştırın ve paneldeki kaydı
+silin. Kurulumu elle yapmak isterseniz (ör. betik çalıştıramadığınız bir ortamda) aynı sayfadaki
+"Elle ekle" bölümü sunucuyu kaydeder ve `deploy/edge` klasöründeki dosyalarla birlikte `.env`
+dosyasına yazılacak satırları verir.
 
 Bilinmesi gerekenler:
 
@@ -127,6 +144,14 @@ Bilinmesi gerekenler:
   verin. `CONTROL_URL` için HTTPS adresi uçtan uca denendi (izleme, kesme, HLS). Yeni sunucu ana
   sunucunun sertifikasını doğrulamaz: trafik şifrelenir ama araya giren biri kendini ana sunucu
   gibi tanıtabilir; güvenilmeyen ağlarda özel ağ kullanın.
+- Kurulum komutu ana sunucunun izleyici adresinden (`PUBLIC_BASE_URL`) indirilir; bu adres HTTP ise
+  betik ve sunucunun anahtarı açık taşınır. Kod tek kullanımlıktır: kaydolan sunucunun anahtarı
+  komutta ya da kabuk geçmişinde kalmaz.
+- Ana sunucu, kurulum isteğinin geldiği IP adresini sunucunun adresi sayar ve yayını yalnızca bu
+  adresten çekmesine izin verir. Sunucu yayını başka bir adresten çekiyorsa (birden çok ağ arayüzü,
+  NAT) izleyiciler yönlendirilir ama görüntü gelmez; "Yönet" penceresinde "Sunucunun IP adresi"ni
+  düzeltin. Ana sunucu bir vekilin arkasındaysa `TRUST_PROXY_HEADERS` açık olmalıdır, aksi halde
+  vekilin adresi kaydedilir.
 - Yeni sunucuda veritabanı ya da imza anahtarı bulunmaz; her izlemeyi ana sunucu yetkilendirir. Ana
   sunucu durursa hiçbir sunucudan yeni izleme başlatılamaz.
 
