@@ -263,8 +263,8 @@ func TestViewerManagementIsTenantScoped(t *testing.T) {
 	s := f.s
 	exp := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
 
-	list := must(s.ViewersByTenant(ctx, f.a))
-	if len(list) != 1 || list[0].ID != f.viewerA || list[0].Password != "pa" {
+	list, total, err := s.ViewersByTenant(ctx, f.a, "", store.Page{Limit: 10})
+	if err != nil || total != 1 || len(list) != 1 || list[0].ID != f.viewerA || list[0].Password != "pa" {
 		t.Fatalf("yalnızca A'nın izleyicileri listelenmeli: %+v", list)
 	}
 	if err := s.UpdateViewer(ctx, f.a, f.viewerA, store.ViewerUpdate{Status: ptr("suspended"), SetExpiry: true, ExpiresAt: &exp, MaxConnections: ptr(3)}); err != nil {
@@ -287,7 +287,7 @@ func TestViewerManagementIsTenantScoped(t *testing.T) {
 		t.Fatal("şifre yenilenmeli")
 	}
 
-	_, err := s.ViewerOfTenant(ctx, f.a, f.viewerB)
+	_, err = s.ViewerOfTenant(ctx, f.a, f.viewerB)
 	notFound(t, "ViewerOfTenant", err)
 	notFound(t, "UpdateViewer", s.UpdateViewer(ctx, f.a, f.viewerB, store.ViewerUpdate{Status: ptr("suspended"), MaxConnections: ptr(9)}))
 	notFound(t, "SetViewerPassword", s.SetViewerPassword(ctx, f.a, f.viewerB, "x"))
@@ -320,8 +320,8 @@ func TestActiveSessionsByTenantAndConnections(t *testing.T) {
 	must(s.TouchHLSSession(ctx, testdb.LocalEdge(t), second, f.chanA, "h1", "2.2.2.2", idle))
 	must(s.OpenTSSession(ctx, testdb.LocalEdge(t), f.viewerB, f.chanB, "t9", "9.9.9.9", idle))
 
-	list := must(s.ActiveSessionsByTenant(ctx, f.a, idle))
-	if len(list) != 2 {
+	list, total, err := s.ActiveSessionsByTenant(ctx, f.a, idle, store.Page{Limit: 10})
+	if err != nil || total != 2 || len(list) != 2 {
 		t.Fatalf("yalnızca A'nın etkin oturumları: %+v", list)
 	}
 	got := fmt.Sprintf("%s %s %s %s | %s %s %s", list[0].Viewer, list[0].Channel, list[0].Kind, list[0].IP, list[1].Viewer, list[1].Kind, list[1].IP)

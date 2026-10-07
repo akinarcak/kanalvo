@@ -144,3 +144,23 @@ export function toLocalInput(iso: string | null): string {
 export function fromLocalInput(value: string): string | null {
   return value ? new Date(value).toISOString().replace(/\.\d{3}Z$/, "Z") : null;
 }
+
+export const pageSize = 50;
+
+// Pager, dilimlenen bir listenin altında hangi kayıtların göründüğünü ve sayfa düğmelerini gösterir.
+export function Pager({ offset, shown, total, onMove }: { offset: number; shown: number; total: number; onMove: (offset: number) => void }) {
+  if (total <= pageSize && offset === 0) return null;
+  return (
+    <div className="pager">
+      <span className="muted">
+        {shown === 0 ? `${total} kayıt` : `${total} kayıttan ${offset + 1}–${offset + shown}`}
+      </span>
+      <button type="button" className="ghost" disabled={offset === 0} onClick={() => onMove(Math.max(0, offset - pageSize))}>
+        Önceki
+      </button>
+      <button type="button" className="ghost" disabled={offset + shown >= total} onClick={() => onMove(offset + pageSize)}>
+        Sonraki
+      </button>
+    </div>
+  );
+}

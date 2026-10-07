@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	"streamhub/internal/store"
@@ -262,12 +264,51 @@ func (h *Handler) toViewerJSON(v store.Viewer) viewerJSON {
 	return out
 }
 
+const (
+	defaultPageSize = 50
+	maxPageSize     = 200
+	maxSearchLength = 64
+	// totalHeader, dilimlenen bir listenin toplam kayıt sayısını taşır.
+	totalHeader = "X-Total-Count"
+)
+
+// pageOf, limit ve offset sorgu değerlerini okur; verilmeyen limit defaultPageSize sayılır.
+func pageOf(w http.ResponseWriter, r *http.Request) (store.Page, bool) {
+	p := store.Page{Limit: defaultPageSize}
+	q := r.URL.Query()
+	var err error
+	if v := q.Get("limit"); v != "" {
+		if p.Limit, err = strconv.Atoi(v); err != nil || p.Limit < 1 || p.Limit > maxPageSize {
+			fail(w, http.StatusBadRequest, "invalid", "limit 1 ile 200 arasında olmalı.")
+			return p, false
+		}
+	}
+	if v := q.Get("offset"); v != "" {
+		if p.Offset, err = strconv.Atoi(v); err != nil || p.Offset < 0 {
+			fail(w, http.StatusBadRequest, "invalid", "offset geçersiz.")
+			return p, false
+		}
+	}
+	return p, true
+}
+
+// listViewers: ?q= kullanıcı adında arar; ?limit= ve ?offset= listeyi dilimler (en yeni önce).
 func (h *Handler) listViewers(w http.ResponseWriter, r *http.Request, a actor) {
-	list, err := h.store.ViewersByTenant(r.Context(), a.id)
+	page, valid := pageOf(w, r)
+	if !valid {
+		return
+	}
+	search := strings.TrimSpace(r.URL.Query().Get("q"))
+	if len(search) > maxSearchLength {
+		fail(w, http.StatusBadRequest, "invalid", "Arama metni en çok 64 karakter olabilir.")
+		return
+	}
+	list, total, err := h.store.ViewersByTenant(r.Context(), a.id, search, page)
 	if err != nil {
 		h.internal(w, err)
 		return
 	}
+	w.Header().Set(totalHeader, strconv.Itoa(total))
 	out := make([]viewerJSON, 0, len(list))
 	for _, v := range list {
 		out = append(out, h.toViewerJSON(v))
@@ -411,11 +452,16 @@ func (h *Handler) regeneratePassword(w http.ResponseWriter, r *http.Request, a a
 // --- oturumlar ---
 
 func (h *Handler) listSessions(w http.ResponseWriter, r *http.Request, a actor) {
-	list, err := h.store.ActiveSessionsByTenant(r.Context(), a.id, h.cfg.Idle)
+	page, valid := pageOf(w, r)
+	if !valid {
+		return
+	}
+	list, total, err := h.store.ActiveSessionsByTenant(r.Context(), a.id, h.cfg.Idle, page)
 	if err != nil {
 		h.internal(w, err)
 		return
 	}
+	w.Header().Set(totalHeader, strconv.Itoa(total))
 	type sessionJSON struct {
 		ID        int64  `json:"id"`
 		Viewer    string `json:"viewer"`

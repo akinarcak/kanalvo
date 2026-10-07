@@ -1,6 +1,6 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import { type Category, type Channel, type Overview, type Session, type Viewer, api } from "./api";
-import { Badge, CopyField, ErrorNote, Loading, Meter, Panel, formatDate, fromLocalInput, toLocalInput, useAction, useLoad } from "./ui";
+import { Badge, CopyField, ErrorNote, Loading, Meter, Pager, Panel, formatDate, fromLocalInput, pageSize, toLocalInput, useAction, useLoad } from "./ui";
 
 // --- Genel bakış ---
 
@@ -291,12 +291,24 @@ function ObsSettings({ channel, onClose, onChanged }: { channel: Channel; onClos
 // --- İzleyiciler ---
 
 export function Viewers() {
-  const viewers = useLoad(() => api.get<Viewer[]>("/api/tenant/viewers"));
+  // Liste dilim dilim gelir (en yeni önce); arama kullanıcı adında yapılır.
+  const [search, setSearch] = useState("");
+  const [offset, setOffset] = useState(0);
+  const viewers = useLoad(() => api.page<Viewer>("/api/tenant/viewers", { q: search.trim(), limit: pageSize, offset }));
   const overview = useLoad(() => api.get<Overview>("/api/tenant/overview"));
   const [opened, setOpened] = useState<{ id: number; mode: "info" | "edit" } | null>(null);
   const action = useAction();
-  const current = viewers.data?.find((v) => v.id === opened?.id) ?? null;
+  const current = viewers.data?.items.find((v) => v.id === opened?.id) ?? null;
   const reload = () => void viewers.reload();
+  useEffect(() => {
+    // Yazarken her tuşta istek gitmesin diye kısa bir bekleme.
+    const timer = window.setTimeout(() => void viewers.reload(), 250);
+    return () => window.clearTimeout(timer);
+  }, [search, offset]);
+  // Silme sonrası boşalan son sayfada kalınmaz.
+  useEffect(() => {
+    if (viewers.data && viewers.data.items.length === 0 && offset > 0) setOffset(Math.max(0, offset - pageSize));
+  }, [viewers.data]);
 
   const toggle = (v: Viewer) => {
     const status = v.status === "active" ? "suspended" : "active";
@@ -317,14 +329,34 @@ export function Viewers() {
 
   return (
     <>
-      <CreateViewer onCreated={(v) => (setOpened({ id: v.id, mode: "info" }), reload())} />
+      <CreateViewer
+        onCreated={(v) => {
+          // Yeni izleyici listenin başındadır; görünmesi için arama ve sayfa sıfırlanır.
+          setOpened({ id: v.id, mode: "info" });
+          setSearch("");
+          setOffset(0);
+          reload();
+        }}
+      />
 
       <Panel title="İzleyiciler">
         <ErrorNote message={action.error} />
+        <div className="list-search">
+          <input
+            type="search"
+            placeholder="Kullanıcı adında ara"
+            aria-label="Kullanıcı adında ara"
+            value={search}
+            maxLength={64}
+            onChange={(e) => (setSearch(e.target.value), setOffset(0))}
+          />
+        </div>
         {!viewers.data ? (
           <Loading error={viewers.error} />
-        ) : viewers.data.length === 0 ? (
-          <p className="muted">Henüz izleyici yok. Yukarıdaki formla bir izleyici hesabı oluşturun.</p>
+        ) : viewers.data.items.length === 0 ? (
+          <p className="muted">
+            {search.trim() ? "Aramayla eşleşen izleyici yok." : "Henüz izleyici yok. Yukarıdaki formla bir izleyici hesabı oluşturun."}
+          </p>
         ) : (
           <div className="table-wrap">
             <table>
@@ -338,7 +370,7 @@ export function Viewers() {
                 </tr>
               </thead>
               <tbody>
-                {viewers.data.map((v) => {
+                {viewers.data.items.map((v) => {
                   const expired = v.expires_at !== null && new Date(v.expires_at) <= new Date();
                   return (
                     <tr key={v.id} className={v.id === opened?.id ? "selected" : ""}>
@@ -375,6 +407,7 @@ export function Viewers() {
             </table>
           </div>
         )}
+        {viewers.data && <Pager offset={offset} shown={viewers.data.items.length} total={viewers.data.total} onMove={setOffset} />}
       </Panel>
 
       {current && opened?.mode === "info" && (
@@ -511,12 +544,18 @@ function EditViewer({ viewer, onClose, onSaved }: { viewer: Viewer; onClose: () 
 // --- Oturumlar ---
 
 export function Sessions() {
-  const sessions = useLoad(() => api.get<Session[]>("/api/tenant/sessions"), 5000);
+  const [offset, setOffset] = useState(0);
+  const sessions = useLoad(() => api.page<Session>("/api/tenant/sessions", { limit: pageSize, offset }), 5000);
+  useEffect(() => void sessions.reload(), [offset]);
+  // İzlemeler azalınca boşalan son sayfada kalınmaz.
+  useEffect(() => {
+    if (sessions.data && sessions.data.items.length === 0 && offset > 0) setOffset(Math.max(0, offset - pageSize));
+  }, [sessions.data]);
   return (
     <Panel title="Süren izlemeler">
       {!sessions.data ? (
         <Loading error={sessions.error} />
-      ) : sessions.data.length === 0 ? (
+      ) : sessions.data.items.length === 0 ? (
         <p className="muted">Şu an izleyen yok. Liste 5 saniyede bir yenilenir.</p>
       ) : (
         <div className="table-wrap">
@@ -532,7 +571,7 @@ export function Sessions() {
               </tr>
             </thead>
             <tbody>
-              {sessions.data.map((s) => (
+              {sessions.data.items.map((s) => (
                 <tr key={s.id}>
                   <td>{s.viewer}</td>
                   <td>{s.channel}</td>
@@ -548,6 +587,7 @@ export function Sessions() {
           </table>
         </div>
       )}
+      {sessions.data && <Pager offset={offset} shown={sessions.data.items.length} total={sessions.data.total} onMove={setOffset} />}
     </Panel>
   );
 }

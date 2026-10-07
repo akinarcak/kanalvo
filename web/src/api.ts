@@ -14,7 +14,17 @@ export class ApiError extends Error {
   }
 }
 
+// Paged, dilimlenen bir listenin istenen parçası ve toplam kayıt sayısıdır.
+export interface Paged<T> {
+  items: T[];
+  total: number;
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  return (await requestWithTotal<T>(method, path, body)).data;
+}
+
+async function requestWithTotal<T>(method: string, path: string, body?: unknown): Promise<{ data: T; total: number }> {
   const headers: Record<string, string> = {};
   if (method !== "GET") headers["X-StreamHub-Panel"] = "1";
   if (body !== undefined) headers["Content-Type"] = "application/json";
@@ -30,7 +40,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   } catch {
     throw new ApiError("Sunucuya ulaşılamadı. Bağlantınızı kontrol edin.", 0, "network");
   }
-  if (res.status === 204) return undefined as T;
+  if (res.status === 204) return { data: undefined as T, total: 0 };
 
   let data: unknown = null;
   try {
@@ -44,11 +54,18 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     if (sessionEnded && path !== "/api/login" && path !== "/api/me") window.dispatchEvent(new Event(sessionEndedEvent));
     throw new ApiError(err?.message ?? `Beklenmeyen yanıt (${res.status}).`, res.status, err?.code ?? "unknown");
   }
-  return data as T;
+  return { data: data as T, total: Number(res.headers.get("X-Total-Count") ?? 0) };
 }
 
 export const api = {
   get: <T,>(path: string) => request<T>("GET", path),
+  // page, limit ve offset ile dilimlenen bir listeyi toplam sayısıyla birlikte getirir.
+  page: async <T,>(path: string, params: Record<string, string | number>): Promise<Paged<T>> => {
+    const query = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v !== "") query.set(k, String(v));
+    const { data, total } = await requestWithTotal<T[]>("GET", `${path}?${query}`);
+    return { items: data, total };
+  },
   post: <T,>(path: string, body?: unknown) => request<T>("POST", path, body),
   patch: <T,>(path: string, body: unknown) => request<T>("PATCH", path, body),
   del: (path: string) => request<void>("DELETE", path),

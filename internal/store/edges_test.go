@@ -217,8 +217,8 @@ func TestSessionListNamesTheEdge(t *testing.T) {
 	must(s.OpenTSSession(ctx, testdb.LocalEdge(t), f.viewer, f.channel, "c1", "1.1.1.1", idle))
 	must(s.TouchHLSSession(ctx, remote, f.viewer, f.channel, "k1", "2.2.2.2", idle))
 
-	list := must(s.ActiveSessionsByTenant(ctx, f.tenant, idle))
-	if len(list) != 2 || list[0].Edge != "Yerel" || list[1].Edge != "e1" {
+	list, _, err := s.ActiveSessionsByTenant(ctx, f.tenant, idle, store.Page{Limit: 10})
+	if err != nil || len(list) != 2 || list[0].Edge != "Yerel" || list[1].Edge != "e1" {
 		t.Fatalf("oturum listesindeki sunucu adları: %+v", list)
 	}
 }

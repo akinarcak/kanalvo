@@ -829,3 +829,78 @@ func TestMalformedRequests(t *testing.T) {
 		}
 	}
 }
+
+// usernames, bir izleyici listesi yanıtındaki kullanıcı adlarını ve toplam kayıt sayısını döner.
+func usernames(t *testing.T, r response) (string, string) {
+	t.Helper()
+	var list []viewerJSON
+	r.into(t, &list)
+	names := make([]string, 0, len(list))
+	for _, v := range list {
+		names = append(names, v.Username)
+	}
+	return strings.Join(names, ","), r.rec.Header().Get("X-Total-Count")
+}
+
+// İzleyici listesi dilim dilim gelir (en yeni önce) ve kullanıcı adına göre aranabilir; binlerce
+// izleyicisi olan yayıncının paneli tüm listeyi tek istekte çekmez.
+func TestViewerListIsPagedAndSearchable(t *testing.T) {
+	f := setup(t)
+	tenant, _, _ := f.newTenant("A", "a@example.com")
+	other, _, _ := f.newTenant("B", "b@example.com")
+	other.viewer("veli9")
+	for _, name := range []string{"ali1", "ali2", "veli1", "Veli2", "a_b"} {
+		tenant.viewer(name)
+	}
+
+	for query, want := range map[string][2]string{
+		"":                  {"a_b,Veli2,veli1,ali2,ali1", "5"},
+		"?limit=2":          {"a_b,Veli2", "5"},
+		"?limit=2&offset=2": {"veli1,ali2", "5"},
+		"?limit=2&offset=4": {"ali1", "5"},
+		"?limit=2&offset=9": {"", "5"},
+		"?q=VELI":           {"Veli2,veli1", "2"},
+		"?q=veli&limit=1":   {"Veli2", "2"},
+		"?q=+ali+":          {"ali2,ali1", "2"},
+		"?q=_":              {"a_b", "1"}, // arama metni kalıp değildir
+		"?q=%25":            {"", "0"},
+		"?q=yok":            {"", "0"},
+	} {
+		names, total := usernames(t, tenant.want(tenant.get("/api/tenant/viewers"+query), http.StatusOK))
+		if names != want[0] || total != want[1] {
+			t.Errorf("%q: %s (toplam %s), beklenen %s (toplam %s)", query, names, total, want[0], want[1])
+		}
+	}
+	for _, query := range []string{"?limit=0", "?limit=201", "?limit=abc", "?offset=-1", "?offset=x", "?q=" + strings.Repeat("a", 65)} {
+		if r := tenant.get("/api/tenant/viewers" + query); r.code != http.StatusBadRequest {
+			t.Errorf("%q: durum %d", query, r.code)
+		}
+	}
+}
+
+func TestSessionListIsPaged(t *testing.T) {
+	f := setup(t)
+	tenant, _, _ := f.newTenant("A", "a@example.com")
+	ch := tenant.channel("Kanal")
+	ctx := context.Background()
+	for i, name := range []string{"bir", "iki", "uch"} {
+		v := tenant.viewer(name)
+		must(f.store.OpenTSSession(ctx, testdb.LocalEdge(t), v.ID, ch.ID, fmt.Sprintf("c%d", i), "1.1.1.1", idle))
+		testdb.Exec(t, `UPDATE sessions SET started_at = now() - make_interval(mins => $2) WHERE session_key = $1`, fmt.Sprintf("c%d", i), 10-i)
+	}
+	for query, want := range map[string]string{"": "bir,iki,uch", "?limit=2": "bir,iki", "?limit=2&offset=2": "uch", "?offset=3": ""} {
+		r := tenant.want(tenant.get("/api/tenant/sessions"+query), http.StatusOK)
+		var list []struct{ Viewer string }
+		r.into(t, &list)
+		names := make([]string, 0, len(list))
+		for _, s := range list {
+			names = append(names, s.Viewer)
+		}
+		if got := strings.Join(names, ","); got != want || r.rec.Header().Get("X-Total-Count") != "3" {
+			t.Errorf("%q: %s (toplam %s), beklenen %s (toplam 3)", query, got, r.rec.Header().Get("X-Total-Count"), want)
+		}
+	}
+	if r := tenant.get("/api/tenant/sessions?limit=0"); r.code != http.StatusBadRequest {
+		t.Errorf("limit=0: durum %d", r.code)
+	}
+}

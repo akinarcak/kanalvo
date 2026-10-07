@@ -470,3 +470,22 @@ td.actions button {
   border-radius: 6px;
   font-size: 0.85rem;
 }
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.list-search {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.list-search input {
+  flex: 1;
+  max-width: 320px;
+}

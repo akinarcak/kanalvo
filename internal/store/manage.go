@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -88,12 +89,30 @@ func (s *Store) inTx(ctx context.Context, fn func(pgx.Tx) error) error {
 	return tx.Commit(ctx)
 }
 
-func (s *Store) ViewersByTenant(ctx context.Context, tenantID int64) ([]Viewer, error) {
-	rows, err := s.pool.Query(ctx, viewerSelect+`WHERE v.tenant_id = $1 ORDER BY v.id`, tenantID)
-	if err != nil {
-		return nil, err
+// Page, bir listenin istenen dilimidir.
+type Page struct {
+	Limit  int
+	Offset int
+}
+
+// likeEscaper, arama metnindeki LIKE özel karakterlerini düz karaktere çevirir.
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+// ViewersByTenant, yayıncının izleyicilerinin istenen dilimini (en yeni önce) ve toplam sayısını
+// döner. search verilmişse yalnızca kullanıcı adında o metin geçenler (büyük/küçük harf ayırmadan).
+func (s *Store) ViewersByTenant(ctx context.Context, tenantID int64, search string, p Page) ([]Viewer, int, error) {
+	const where = `WHERE v.tenant_id = $1 AND v.username ILIKE '%' || $2 || '%' `
+	pattern := likeEscaper.Replace(search)
+	var total int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM viewers v `+where, tenantID, pattern).Scan(&total); err != nil {
+		return nil, 0, err
 	}
-	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (Viewer, error) { return scanViewer(row) })
+	rows, err := s.pool.Query(ctx, viewerSelect+where+`ORDER BY v.id DESC LIMIT $3 OFFSET $4`, tenantID, pattern, p.Limit, p.Offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	list, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Viewer, error) { return scanViewer(row) })
+	return list, total, err
 }
 
 func (s *Store) ViewerOfTenant(ctx context.Context, tenantID, id int64) (Viewer, error) {
@@ -166,7 +185,14 @@ type SessionInfo struct {
 	Edge      string
 }
 
-func (s *Store) ActiveSessionsByTenant(ctx context.Context, tenantID int64, idle time.Duration) ([]SessionInfo, error) {
+// ActiveSessionsByTenant, yayıncının süren izlemelerinin istenen dilimini (en eski önce) ve
+// toplam sayısını döner.
+func (s *Store) ActiveSessionsByTenant(ctx context.Context, tenantID int64, idle time.Duration, p Page) ([]SessionInfo, int, error) {
+	var total int
+	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM sessions WHERE tenant_id = $2 AND `+activeSession, idle.Seconds(), tenantID).Scan(&total)
+	if err != nil {
+		return nil, 0, err
+	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT x.id, v.username, c.name, x.kind, x.ip, x.started_at, e.name
 		FROM sessions x
@@ -175,11 +201,12 @@ func (s *Store) ActiveSessionsByTenant(ctx context.Context, tenantID int64, idle
 		JOIN edges e ON e.id = x.edge_id
 		WHERE x.tenant_id = $2 AND NOT x.revoked
 		  AND (x.kind = 'ts' OR x.last_seen_at > now() - make_interval(secs => $1))
-		ORDER BY x.started_at, x.id`, idle.Seconds(), tenantID)
+		ORDER BY x.started_at, x.id LIMIT $3 OFFSET $4`, idle.Seconds(), tenantID, p.Limit, p.Offset)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[SessionInfo])
+	list, err := pgx.CollectRows(rows, pgx.RowToStructByPos[SessionInfo])
+	return list, total, err
 }
 
 // --- kesilmeyi bekleyen bağlantılar ---
