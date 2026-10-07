@@ -612,3 +612,26 @@ func TestKickingAnAlreadyGoneConnectionIsNotAFailure(t *testing.T) {
 		t.Fatalf("SRS'te olmayan oturumun kaydı silinmeliydi: %d", n)
 	}
 }
+
+// Bağlantı listesi kesmelerden önce alınır. Kesmeler sürerken tanınan süreyi dolduran yeni bir
+// oturum, liste alındığında henüz SRS'te görünmüyor olabilir; listede yok diye silinmemelidir.
+func TestSlowKicksDoNotCostANewSessionItsGrace(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	banned := must(f.s.CreateViewer(ctx, f.tenant, "veli", "pw", 2))
+	ok(t, f.m.OpenTS(ctx, f.local, banned, f.channel, "askida-1", "1.1.1.1"))
+	ok(t, f.m.OpenTS(ctx, f.local, banned, f.channel, "askida-2", "1.1.1.1"))
+	ok(t, f.m.OpenTS(ctx, f.local, f.viewer, f.channel, "yeni", "1.1.1.1"))
+	testdb.Exec(t, `UPDATE sessions SET started_at = now() - interval '8 seconds' WHERE session_key = 'yeni'`)
+	ok(t, f.s.SetViewerStatus(ctx, banned, "suspended"))
+	f.ts.clients = []string{"askida-1", "askida-2"}
+	f.ts.kickDelay = 1500 * time.Millisecond // iki kesme: liste ile eşitleme arasında 3 saniye
+
+	ok(t, f.m.EnforceOnce(ctx))
+	if f.ts.got() != "[askida-1 askida-2]" {
+		t.Fatalf("askıdaki izleyicinin bağlantıları kesilmeliydi: %s", f.ts.got())
+	}
+	if n := testdb.Count(t, `SELECT count(*) FROM sessions WHERE session_key = 'yeni'`); n != 1 {
+		t.Fatal("liste alındığında süresi dolmamış oturum, kesmeler uzun sürdü diye silindi")
+	}
+}
