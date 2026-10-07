@@ -224,3 +224,23 @@ func TestTenantSessionListShowsTheServerName(t *testing.T) {
 		t.Fatalf("oturum listesi: %+v", sessions)
 	}
 }
+
+// Yönetim adresi ayrıca verilmemişse izleyici adresiyle aynıdır ve onunla birlikte değişir;
+// ayrı bir yönetim adresi verilmişse izleyici adresi değişince olduğu gibi kalır.
+func TestControlAddressFollowsTheViewerAddressUnlessSetSeparately(t *testing.T) {
+	f := setup(t)
+	admin := f.admin()
+	var e edgeJSON
+	admin.want(admin.post("/api/admin/edges", map[string]any{"name": "e1", "base_url": "http://edge1.example.com", "pull_ip": "203.0.113.20"}), http.StatusCreated).into(t, &e)
+
+	admin.want(admin.patch(pathOf(e.ID), map[string]any{"base_url": "https://yeni.example.com"}), http.StatusOK).into(t, &e)
+	if e.BaseURL != "https://yeni.example.com" || e.ControlURL != "https://yeni.example.com" {
+		t.Fatalf("yönetim adresi izleyici adresini izlemeliydi: %+v", e)
+	}
+
+	admin.want(admin.patch(pathOf(e.ID), map[string]any{"control_url": "http://10.0.0.5"}), http.StatusOK).into(t, &e)
+	admin.want(admin.patch(pathOf(e.ID), map[string]any{"base_url": "https://ucuncu.example.com"}), http.StatusOK).into(t, &e)
+	if e.BaseURL != "https://ucuncu.example.com" || e.ControlURL != "http://10.0.0.5" {
+		t.Fatalf("ayrı verilmiş yönetim adresi korunmalıydı: %+v", e)
+	}
+}

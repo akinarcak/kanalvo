@@ -48,16 +48,17 @@ const activeSession = `NOT revoked AND (kind = 'ts' OR last_seen_at > now() - ma
 func (s *Store) TouchHLSSession(ctx context.Context, edgeID, viewerID, channelID int64, key, ip string, idle time.Duration) ([]Evicted, error) {
 	// Sık yol: kilit almadan tek okuma. Sonlandırılmış bir adresin yeniden denemeleri de burada
 	// reddedilir, böylece yayıncı satırının kilidini meşgul etmez.
-	var dead, sameIP, active, fresh, movable bool
+	var dead, sameIP, sameEdge, active, fresh, movable bool
 	err := s.pool.QueryRow(ctx, `
 		SELECT revoked OR viewer_id <> $3,
 		       ip = $2,
+		       edge_id = $7,
 		       last_seen_at > now() - make_interval(secs => $4),
 		       last_seen_at > now() - make_interval(secs => $5),
 		       (ip_changed_at IS NULL OR ip_changed_at <= now() - make_interval(secs => $6))
 		FROM sessions WHERE kind = 'hls' AND session_key = $1`,
-		key, ip, viewerID, idle.Seconds(), hlsTouchInterval.Seconds(), hlsMoveCooldown.Seconds()).
-		Scan(&dead, &sameIP, &active, &fresh, &movable)
+		key, ip, viewerID, idle.Seconds(), hlsTouchInterval.Seconds(), hlsMoveCooldown.Seconds(), edgeID).
+		Scan(&dead, &sameIP, &sameEdge, &active, &fresh, &movable)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 	case err != nil:
@@ -65,8 +66,8 @@ func (s *Store) TouchHLSSession(ctx context.Context, edgeID, viewerID, channelID
 	case dead:
 		return nil, ErrSessionRevoked
 	case sameIP && active:
-		if !fresh {
-			_, err = s.pool.Exec(ctx, `UPDATE sessions SET last_seen_at = now() WHERE kind = 'hls' AND session_key = $1 AND NOT revoked`, key)
+		if !fresh || !sameEdge {
+			_, err = s.pool.Exec(ctx, `UPDATE sessions SET last_seen_at = now(), edge_id = $2 WHERE kind = 'hls' AND session_key = $1 AND NOT revoked`, key, edgeID)
 		}
 		return nil, err
 	case !sameIP && !movable:

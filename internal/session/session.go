@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"sync"
 	"time"
 
@@ -33,6 +34,22 @@ const (
 	deadEdgeAfter = 2 * time.Minute
 )
 
+// edgeTimeout, bir geçişte tek bir edge'e (kesmeler ve bağlantı listesi) ayrılan en uzun süredir.
+// Denetim aralığından kısadır: yanıt vermeyen bir edge diğerlerinin sağlık sinyalini geciktirmez.
+var edgeTimeout = 4 * time.Second
+
+var portPattern = regexp.MustCompile(`:\d+`)
+
+// failureKey, bir arızanın loglarda tekrarlanıp tekrarlanmadığını anlamak için kullanılan
+// metindir: bağlantı noktaları atılır, çünkü her denemede değişen geçici bağlantı noktası aynı
+// arızayı yeni bir arıza gibi gösterir.
+func failureKey(err error) string {
+	if err == nil {
+		return ""
+	}
+	return portPattern.ReplaceAllString(err.Error(), "")
+}
+
 // SRS, bir SRS'in yönetim API'sinin kullanılan kısmıdır (bkz. srsapi.Client).
 type SRS interface {
 	ClientIDs(ctx context.Context) ([]string, error)
@@ -46,12 +63,33 @@ type Manager struct {
 	origin    SRS // yayıncıların bağlandığı origin
 	idle      time.Duration
 	retention time.Duration
+
+	mu sync.Mutex
+	// down: son denetim geçişinde bağlantı listesi alınamayan edge'ler. İstek sırasındaki kesmeler
+	// (yeni izleme, panel işlemi) bunlara gitmez; denetim döngüsü denemeyi sürdürür.
+	down map[int64]bool
 }
 
 // New: idle, istek gelmeyen bir HLS oturumunun bağlantı limitinden düşmesi için geçen süredir.
 // retention, HLS oturum kayıtlarının saklanma süresidir ve HLS imzasının ömründen kısa olmamalıdır.
 func New(s *store.Store, srsFor func(store.Edge) SRS, origin SRS, idle, retention time.Duration) *Manager {
-	return &Manager{store: s, srsFor: srsFor, origin: origin, idle: idle, retention: retention}
+	return &Manager{store: s, srsFor: srsFor, origin: origin, idle: idle, retention: retention, down: map[int64]bool{}}
+}
+
+func (m *Manager) isDown(edgeID int64) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.down[edgeID]
+}
+
+func (m *Manager) setDown(edgeID int64, down bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if down {
+		m.down[edgeID] = true
+	} else {
+		delete(m.down, edgeID)
+	}
 }
 
 // OpenTS, bir edge'in SRS'inin bildirdiği yeni .ts izlemesini kaydeder.
@@ -88,6 +126,9 @@ func (m *Manager) kickEvicted(ctx context.Context, evicted []store.Evicted) {
 		if e.Kind != "ts" {
 			continue // sonlandırılmış HLS oturumunu geçit bir sonraki istekte reddeder
 		}
+		if m.isDown(e.EdgeID) {
+			continue // izleme isteği ulaşılamayan edge'i beklemez; bağlantıyı denetim döngüsü keser
+		}
 		kickCtx, cancel := context.WithTimeout(ctx, kickTimeout)
 		edge, err := m.store.EdgeByID(kickCtx, e.EdgeID, 0)
 		if err == nil {
@@ -102,7 +143,8 @@ func (m *Manager) kickEvicted(ctx context.Context, evicted []store.Evicted) {
 
 // Flush, kesilmeyi bekleyen bağlantıları hemen kesmeyi dener. Bir kanal veya izleyici silindikten,
 // yayın anahtarı ya da izleyici şifresi yenilendikten sonra çağrılır; böylece etkisi bir sonraki
-// döngü geçişini beklemez. İsteğin iptalinden etkilenmez; başarısız olanları Enforce döngüsü yeniden dener.
+// döngü geçişini beklemez. İsteğin iptalinden etkilenmez; başarısız olanları ve ulaşılamadığı
+// bilinen edge'lerdekileri Enforce döngüsü yeniden dener.
 func (m *Manager) Flush(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), flushTimeout)
 	defer cancel()
@@ -120,10 +162,7 @@ func (m *Manager) Run(ctx context.Context, interval time.Duration) {
 	for {
 		err := m.EnforceOnce(ctx)
 		if ctx.Err() == nil {
-			current := ""
-			if err != nil {
-				current = err.Error()
-			}
+			current := failureKey(err)
 			switch {
 			case current != "" && current != last:
 				log.Printf("session: %v", err)
@@ -157,7 +196,8 @@ func (m *Manager) EnforceOnce(ctx context.Context) error {
 }
 
 // pass, origin'i ve her edge'i birbirinden bağımsız denetler: biri yanıt vermese de diğerlerinin
-// işi gecikmez. reconcile kapalıysa yalnızca kesmeler yapılır.
+// işi gecikmez ve geçiş edgeTimeout'tan uzun sürmez. reconcile kapalıysa yalnızca kesmeler yapılır
+// ve ulaşılamadığı bilinen edge'ler atlanır.
 func (m *Manager) pass(ctx context.Context, reconcile bool) error {
 	edges, listErr := m.store.Edges(ctx, 0)
 	errs := make([]error, len(edges)+2)
@@ -173,9 +213,14 @@ func (m *Manager) pass(ctx context.Context, reconcile bool) error {
 		)
 	}()
 	for i, e := range edges {
+		if !reconcile && m.isDown(e.ID) {
+			continue
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			ctx, cancel := context.WithTimeout(ctx, edgeTimeout)
+			defer cancel()
 			if err := m.enforceEdge(ctx, e, reconcile); err != nil {
 				errs[i] = fmt.Errorf("edge %q: %w", e.Name, err)
 			}
@@ -232,6 +277,7 @@ func (m *Manager) kickAll(ctx context.Context, srs SRS, list func(context.Contex
 // alınabilmesi edge'in sağlık sinyalidir.
 func (m *Manager) reconcile(ctx context.Context, e store.Edge, srs SRS) error {
 	ids, err := srs.ClientIDs(ctx)
+	m.setDown(e.ID, err != nil)
 	if err != nil {
 		return err
 	}

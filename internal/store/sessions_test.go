@@ -433,3 +433,25 @@ func TestChannelAndViewerQuotas(t *testing.T) {
 		t.Fatalf("varsayılan kotalar %+v", d)
 	}
 }
+
+// Aynı HLS adresi başka bir sunucudan sürdürülürse oturum o sunucuda görünür (ör. oynatıcı
+// çalma listesini yeniden istediğinde başka edge'e yönlendirilmiştir).
+func TestHLSSessionFollowsTheEdgeItIsServedFrom(t *testing.T) {
+	f := newSessionFixture(t, 1)
+	ctx := context.Background()
+	remote := newRemoteEdge(t, f.s, "e1")
+	must(f.hls("k1", "1.1.1.1"))
+	edgeOf := func() int {
+		return testdb.Count(t, `SELECT edge_id FROM sessions WHERE session_key = 'k1'`)
+	}
+	if edgeOf() != int(testdb.LocalEdge(t)) {
+		t.Fatalf("oturum yerel edge'de açılmalıydı: %d", edgeOf())
+	}
+	wantEvicted(t, must(f.s.TouchHLSSession(ctx, remote, f.viewer, f.channel, "k1", "1.1.1.1", idle)))
+	if edgeOf() != int(remote) {
+		t.Fatalf("oturum isteğin geldiği edge'e geçmeliydi: %d", edgeOf())
+	}
+	if n := f.active(); n != 1 {
+		t.Fatalf("sunucu değiştiren oturum tek sayılmalı: %d", n)
+	}
+}

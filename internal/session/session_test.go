@@ -22,18 +22,39 @@ type fakeSRS struct {
 	listErr error
 	kickErr error
 	kicked  []string
+	// hang: istekler yanıt vermez, bağlamın süresi dolana kadar bekler.
+	hang bool
 }
 
-func (f *fakeSRS) ClientIDs(context.Context) ([]string, error) {
+func (f *fakeSRS) wait(ctx context.Context) error {
+	f.mu.Lock()
+	hang := f.hang
+	f.mu.Unlock()
+	if !hang {
+		return nil
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (f *fakeSRS) ClientIDs(ctx context.Context) ([]string, error) {
+	if err := f.wait(ctx); err != nil {
+		return nil, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.clients, f.listErr
 }
 
-func (f *fakeSRS) Kick(_ context.Context, id string) error {
+func (f *fakeSRS) Kick(ctx context.Context, id string) error {
+	f.mu.Lock()
+	f.kicked = append(f.kicked, id)
+	f.mu.Unlock()
+	if err := f.wait(ctx); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.kicked = append(f.kicked, id)
 	return f.kickErr
 }
 
@@ -394,5 +415,80 @@ func TestSessionsOnALongUnreachableEdgeStopCounting(t *testing.T) {
 	// Başka edge'in oturumu ve HLS kayıtları (sonlandırılmış adresleri kapalı tutar) kalır.
 	if n := testdb.Count(t, `SELECT count(*) FROM sessions`); n != 2 {
 		t.Fatalf("yerel .ts oturumu ve HLS kaydı kalmalıydı: %d", n)
+	}
+}
+
+// Yanıt vermeyen bir edge, denetim geçişini kendi süresinden fazla uzatmaz: diğer edge'lerin
+// sağlık sinyali ve kesmeleri bir sonraki geçişe zamanında yetişir.
+func TestHungEdgeDoesNotStretchThePass(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	session.SetEdgeTimeout(t, 300*time.Millisecond)
+	remote, remoteSRS := f.addEdge("e1")
+	ok(t, f.m.OpenTS(ctx, remote, f.viewer, f.channel, "uzak-c", "1.1.1.1"))
+	remoteSRS.hang = true
+
+	start := time.Now()
+	err := f.m.EnforceOnce(ctx)
+	if took := time.Since(start); took > 3*time.Second {
+		t.Fatalf("yanıt vermeyen edge geçişi %s uzattı", took)
+	}
+	if err == nil || !strings.Contains(err.Error(), `edge "e1"`) {
+		t.Fatalf("hata yanıt vermeyen edge'i adıyla bildirmeli: %v", err)
+	}
+	if !f.healthy(f.local) || f.healthy(remote) {
+		t.Fatalf("sağlık: yerel=%v uzak=%v", f.healthy(f.local), f.healthy(remote))
+	}
+}
+
+// Ulaşılamadığı bilinen bir edge, panel işlemlerini ve yeni izlemeleri bekletmez: kesmeleri
+// denetim döngüsüne bırakılır, edge yeniden yanıt verince istek sırasındaki kesmeler yeniden başlar.
+func TestKnownUnreachableEdgeIsLeftToTheLoop(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	remote, remoteSRS := f.addEdge("e1")
+	two := must(f.s.CreateViewer(ctx, f.tenant, "veli", "pw", 1))
+	ok(t, f.m.OpenTS(ctx, remote, two, f.channel, "uzak-1", "1.1.1.1"))
+	remoteSRS.listErr = errors.New("bağlantı reddedildi")
+	remoteSRS.kickErr = errors.New("bağlantı reddedildi")
+	if err := f.m.EnforceOnce(ctx); err == nil {
+		t.Fatal("hata bildirilmeliydi")
+	}
+
+	// Yerinden edilen bağlantı ulaşılamayan edge'de: istek sırasında denenmez.
+	ok(t, f.m.OpenTS(ctx, f.local, two, f.channel, "yerel-1", "1.1.1.1"))
+	f.m.Flush(ctx)
+	if remoteSRS.got() != "[]" {
+		t.Fatalf("ulaşılamayan edge'e istek sırasında gidildi: %s", remoteSRS.got())
+	}
+
+	// Döngü denemeyi sürdürür; edge dönünce bağlantı kesilir.
+	remoteSRS.listErr, remoteSRS.kickErr = nil, nil
+	remoteSRS.clients = []string{"uzak-1"}
+	ok(t, f.m.EnforceOnce(ctx))
+	if remoteSRS.got() != "[uzak-1]" {
+		t.Fatalf("yeniden yanıt veren edge'de bekleyen bağlantı kesilmeli: %s", remoteSRS.got())
+	}
+	// Edge yanıt verdiğine göre kesmeler yine istek sırasında yapılır.
+	ok(t, f.m.OpenTS(ctx, remote, two, f.channel, "uzak-2", "1.1.1.1"))
+	ok(t, f.m.OpenTS(ctx, f.local, two, f.channel, "yerel-2", "1.1.1.1"))
+	if remoteSRS.got() != "[uzak-1 uzak-2]" {
+		t.Fatalf("yanıt veren edge'de kesme istek sırasında yapılmalı: %s", remoteSRS.got())
+	}
+}
+
+// Süren bir arızanın metnindeki geçici bağlantı noktaları değişse de log anahtarı aynı kalır.
+func TestFailureKeyIgnoresEphemeralPorts(t *testing.T) {
+	a := errors.New(`edge "e1": read tcp 172.18.0.3:51234->172.18.0.7:80: read: connection reset by peer`)
+	b := errors.New(`edge "e1": read tcp 172.18.0.3:40002->172.18.0.7:80: read: connection reset by peer`)
+	c := errors.New(`edge "e2": read tcp 172.18.0.3:40002->172.18.0.7:80: read: connection reset by peer`)
+	if session.FailureKey(a) != session.FailureKey(b) {
+		t.Fatalf("aynı arıza farklı sayıldı: %q / %q", session.FailureKey(a), session.FailureKey(b))
+	}
+	if session.FailureKey(a) == session.FailureKey(c) {
+		t.Fatal("başka edge'in arızası aynı sayıldı")
+	}
+	if session.FailureKey(nil) != "" {
+		t.Fatal("hata yokken anahtar boş olmalı")
 	}
 }

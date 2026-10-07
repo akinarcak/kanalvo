@@ -158,7 +158,8 @@ func edgeProblem(nameOK, baseOK, controlOK, ipOK bool, weight int) string {
 	return ""
 }
 
-// adminUpdateEdge, gönderilen alanları değiştirir; gönderilmeyenlere dokunmaz.
+// adminUpdateEdge, gönderilen alanları değiştirir; gönderilmeyenlere dokunmaz. Tek istisna: yönetim
+// adresi izleyici adresiyle aynıysa (ayrıca verilmemişse) izleyici adresiyle birlikte değişir.
 func (h *Handler) adminUpdateEdge(w http.ResponseWriter, r *http.Request, _ actor) {
 	id, valid := pathID(w, r)
 	if !valid {
@@ -202,6 +203,8 @@ func (h *Handler) adminUpdateEdge(w http.ResponseWriter, r *http.Request, _ acto
 		var control string
 		control, controlOK = cleanBaseURL(*in.ControlURL)
 		u.ControlURL = &control
+	} else if u.BaseURL != nil && current.ControlURL == current.TSBaseURL {
+		u.ControlURL = u.BaseURL
 	}
 	if in.PullIP != nil {
 		var ip string
