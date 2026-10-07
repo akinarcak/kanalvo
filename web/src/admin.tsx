@@ -1,6 +1,6 @@
 import { type FormEvent, useState } from "react";
 import { type Quotas, type Stats, type Tenant, api } from "./api";
-import { Badge, CopyField, ErrorNote, Loading, Panel, formatDate, useAction, useLoad } from "./ui";
+import { Avatar, Badge, CopyField, EmptyState, ErrorNote, Loading, Modal, Panel, SearchBox, Stat, Usage, formatDate, useAction, useFeedback, useLoad } from "./ui";
 
 // Yeni oluşturulan veya şifresi sıfırlanan yayıncının şifresi yalnızca bir kez gösterilir.
 interface IssuedPassword {
@@ -13,48 +13,62 @@ export function AdminTenants() {
   const tenants = useLoad(() => api.get<Tenant[]>("/api/admin/tenants"), 10000);
   const [selected, setSelected] = useState<number | null>(null);
   const [issued, setIssued] = useState<IssuedPassword | null>(null);
+  const [search, setSearch] = useState("");
 
   const refresh = () => {
     void stats.reload();
     void tenants.reload();
   };
   const current = tenants.data?.find((t) => t.id === selected) ?? null;
+  const needle = search.trim().toLocaleLowerCase("tr-TR");
+  const shown = tenants.data?.filter((t) => !needle || `${t.name} ${t.email}`.toLocaleLowerCase("tr-TR").includes(needle)) ?? [];
 
   return (
     <>
       {stats.data && (
-        <div className="cards">
-          <Card label="Yayıncı" value={stats.data.tenants} />
-          <Card label="Kanal" value={stats.data.channels} />
-          <Card label="Yayındaki kanal" value={stats.data.live_channels} />
-          <Card label="İzleyici hesabı" value={stats.data.viewers} />
-          <Card label="Süren izleme" value={stats.data.active_sessions} />
+        <div className="stats">
+          <Stat icon="tenants" label="Yayıncı" value={stats.data.tenants} />
+          <Stat icon="channels" label="Kanal" value={stats.data.channels} />
+          <Stat icon="broadcast" label="Yayındaki kanal" value={stats.data.live_channels} live />
+          <Stat icon="viewers" label="İzleyici hesabı" value={stats.data.viewers} />
+          <Stat icon="sessions" label="Süren izleme" value={stats.data.active_sessions} />
         </div>
       )}
 
       {issued && (
-        <Panel title="Panel şifresi" onClose={() => setIssued(null)}>
-          <p>
+        <Modal title="Panel şifresi" onClose={() => setIssued(null)}>
+          <p className="question-body">
             Bu şifre yalnızca şimdi gösteriliyor. <strong>{issued.email}</strong> adresinin sahibine güvenli bir yoldan iletin; ilk
             girişten sonra değiştirmesini isteyin.
           </p>
           <CopyField label="Şifre" value={issued.password} />
-        </Panel>
+          <div className="modal-actions">
+            <button type="button" onClick={() => setIssued(null)}>
+              Tamam
+            </button>
+          </div>
+        </Modal>
       )}
 
       <CreateTenant
         onCreated={(t, password) => {
           setIssued({ email: t.email, password });
-          setSelected(t.id);
           refresh();
         }}
       />
 
-      <Panel title="Yayıncılar">
+      <Panel
+        title="Yayıncılar"
+        aside={tenants.data && tenants.data.length > 5 ? <SearchBox value={search} placeholder="Ad ya da e-postada ara" onChange={setSearch} /> : null}
+      >
         {!tenants.data ? (
           <Loading error={tenants.error} />
         ) : tenants.data.length === 0 ? (
-          <p className="muted">Henüz yayıncı yok. Yukarıdaki formla ilk yayıncıyı ekleyin.</p>
+          <EmptyState icon="tenants" title="Henüz yayıncı yok">
+            Yukarıdaki formla ilk yayıncıyı ekleyin.
+          </EmptyState>
+        ) : shown.length === 0 ? (
+          <EmptyState icon="search" title="Aramayla eşleşen yayıncı yok" />
         ) : (
           <div className="table-wrap">
             <table>
@@ -71,24 +85,29 @@ export function AdminTenants() {
                 </tr>
               </thead>
               <tbody>
-                {tenants.data.map((t) => (
+                {shown.map((t) => (
                   <tr key={t.id} className={t.id === selected ? "selected" : ""}>
-                    <td>{t.name}</td>
+                    <td>
+                      <span className="with-avatar">
+                        <Avatar name={t.name} />
+                        {t.name}
+                      </span>
+                    </td>
                     <td>{t.email || <span className="muted">panel hesabı yok</span>}</td>
                     <td>{t.status === "active" ? <Badge tone="ok">Etkin</Badge> : <Badge tone="warn">Askıda</Badge>}</td>
                     <td className="num">
-                      {t.channels} / {t.quotas.max_channels}
+                      <Usage used={t.channels} limit={t.quotas.max_channels} />
                     </td>
                     <td className="num">
-                      {t.viewers} / {t.quotas.max_viewers}
+                      <Usage used={t.viewers} limit={t.quotas.max_viewers} />
                     </td>
-                    <td className="num">{t.live_channels}</td>
+                    <td className="num">{t.live_channels > 0 ? <strong className="live-text">{t.live_channels}</strong> : <span className="muted">0</span>}</td>
                     <td className="num">
-                      {t.active_sessions} / {t.quotas.max_connections}
+                      <Usage used={t.active_sessions} limit={t.quotas.max_connections} />
                     </td>
                     <td className="actions">
-                      <button type="button" className="ghost" onClick={() => setSelected(t.id === selected ? null : t.id)}>
-                        {t.id === selected ? "Kapat" : "Yönet"}
+                      <button type="button" className="ghost" onClick={() => setSelected(t.id)}>
+                        Yönet
                       </button>
                     </td>
                   </tr>
@@ -105,19 +124,13 @@ export function AdminTenants() {
           tenant={current}
           onChanged={refresh}
           onClose={() => setSelected(null)}
-          onPassword={(password) => setIssued({ email: current.email, password })}
+          onPassword={(password) => {
+            setSelected(null);
+            setIssued({ email: current.email, password });
+          }}
         />
       )}
     </>
-  );
-}
-
-function Card({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="card">
-      <div className="card-value">{value}</div>
-      <div className="muted small">{label}</div>
-    </div>
   );
 }
 
@@ -170,34 +183,46 @@ function TenantDetail({
   const [name, setName] = useState(tenant.name);
   const [email, setEmail] = useState(tenant.email);
   const [quotas, setQuotas] = useState<Quotas>(tenant.quotas);
-  const [saved, setSaved] = useState(false);
   const action = useAction();
+  const { confirm, toast } = useFeedback();
   const path = `/api/admin/tenants/${tenant.id}`;
 
   const save = (e: FormEvent) => {
     e.preventDefault();
-    setSaved(false);
     void action.run(async () => {
       await api.patch(path, { name, email, quotas });
-      setSaved(true);
+      toast("Değişiklikler kaydedildi.");
       onChanged();
     });
   };
 
-  const setStatus = (status: Tenant["status"]) => {
-    const question =
+  const setStatus = async (status: Tenant["status"]) => {
+    const sure = await confirm(
       status === "suspended"
-        ? `"${tenant.name}" askıya alınsın mı? Süren yayınları kesilir ve izleyicileri izleyemez.`
-        : `"${tenant.name}" yeniden etkinleştirilsin mi?`;
-    if (!window.confirm(question)) return;
+        ? {
+            title: `"${tenant.name}" askıya alınsın mı?`,
+            body: "Süren yayınları kesilir, izleyicileri izleyemez ve panele giremez.",
+            confirmLabel: "Askıya al",
+            danger: true,
+          }
+        : { title: `"${tenant.name}" yeniden etkinleştirilsin mi?`, confirmLabel: "Etkinleştir" },
+    );
+    if (!sure) return;
     void action.run(async () => {
       await api.patch(path, { status });
+      toast(status === "suspended" ? "Yayıncı askıya alındı." : "Yayıncı etkinleştirildi.");
       onChanged();
     });
   };
 
-  const resetPassword = () => {
-    if (!window.confirm(`"${tenant.name}" için yeni bir panel şifresi üretilsin mi? Eski şifre ve açık oturumlar geçersiz olur.`)) return;
+  const resetPassword = async () => {
+    const sure = await confirm({
+      title: "Yeni panel şifresi üretilsin mi?",
+      body: `"${tenant.name}" için eski şifre ve açık oturumlar geçersiz olur.`,
+      confirmLabel: "Şifreyi sıfırla",
+      danger: true,
+    });
+    if (!sure) return;
     void action.run(async () => {
       const res = await api.post<{ password: string }>(`${path}/reset-password`);
       onPassword(res.password);
@@ -220,7 +245,10 @@ function TenantDetail({
 
   return (
     <Panel title={`Yayıncı: ${tenant.name}`} onClose={onClose}>
-      <p className="muted small">Oluşturulma: {formatDate(tenant.created_at)}</p>
+      <p className="drawer-status">
+        {tenant.status === "active" ? <Badge tone="ok">Etkin</Badge> : <Badge tone="warn">Askıda</Badge>}
+        <span className="muted small">Oluşturulma: {formatDate(tenant.created_at)}</span>
+      </p>
       <form className="stack" onSubmit={save}>
         <div className="row">
           <label>
@@ -238,20 +266,19 @@ function TenantDetail({
           {quota("max_connections", "Eşzamanlı izleme kotası")}
         </div>
         <ErrorNote message={action.error} />
-        {saved && <p className="note ok">Değişiklikler kaydedildi.</p>}
-        <div className="row">
+        <div className="drawer-actions">
           <button type="submit" disabled={action.busy}>
             Kaydet
           </button>
-          <button type="button" className="ghost" disabled={action.busy || !tenant.email} onClick={resetPassword}>
+          <button type="button" className="ghost" disabled={action.busy || !tenant.email} onClick={() => void resetPassword()}>
             Panel şifresini sıfırla
           </button>
           {tenant.status === "active" ? (
-            <button type="button" className="danger" disabled={action.busy} onClick={() => setStatus("suspended")}>
+            <button type="button" className="ghost danger-text" disabled={action.busy} onClick={() => void setStatus("suspended")}>
               Askıya al
             </button>
           ) : (
-            <button type="button" className="ghost" disabled={action.busy} onClick={() => setStatus("active")}>
+            <button type="button" className="ghost" disabled={action.busy} onClick={() => void setStatus("active")}>
               Yeniden etkinleştir
             </button>
           )}

@@ -1,23 +1,87 @@
 import { type FormEvent, useEffect, useState } from "react";
 import { type Category, type Channel, type Overview, type Session, type Viewer, api } from "./api";
-import { Badge, CopyField, ErrorNote, Loading, Meter, Pager, Panel, formatDate, fromLocalInput, pageSize, toLocalInput, useAction, useLoad } from "./ui";
+import {
+  Avatar,
+  Badge,
+  CopyField,
+  EmptyState,
+  ErrorNote,
+  Icon,
+  LiveBadge,
+  Loading,
+  Pager,
+  Panel,
+  SearchBox,
+  Stat,
+  formatDate,
+  fromLocalInput,
+  navigate,
+  pageSize,
+  since,
+  toLocalInput,
+  useAction,
+  useFeedback,
+  useLoad,
+} from "./ui";
 
 // --- Genel bakış ---
 
 export function OverviewPage() {
   const overview = useLoad(() => api.get<Overview>("/api/tenant/overview"), 10000);
+  const channels = useLoad(() => api.get<Channel[]>("/api/tenant/channels"), 10000);
   if (!overview.data) return <Loading error={overview.error} />;
   const o = overview.data;
+  const live = channels.data?.filter((c) => c.live) ?? [];
+  const steps = [
+    { done: o.usage.channels > 0, title: "Bir kanal oluşturun", hint: "Her kanalın kendi yayın anahtarı olur.", to: "/kanallar", action: "Kanallara git" },
+    { done: live.length > 0, title: "OBS ile yayına başlayın", hint: 'Kanallar sayfasındaki "OBS ayarları"nı OBS\'e yapıştırın.', to: "/kanallar", action: "OBS ayarları" },
+    { done: o.usage.viewers > 0, title: "İzleyici hesabı açın", hint: "İzleyici, verdiğiniz kullanıcı adı ve şifreyle oynatıcısından izler.", to: "/izleyiciler", action: "İzleyicilere git" },
+  ];
   return (
     <>
-      <Panel title="Kullanım">
-        <div className="meters">
-          <Meter label="Kanal" used={o.usage.channels} limit={o.quotas.max_channels} />
-          <Meter label="İzleyici hesabı" used={o.usage.viewers} limit={o.quotas.max_viewers} />
-          <Meter label="Süren izleme" used={o.usage.connections} limit={o.quotas.max_connections} />
-        </div>
-        <p className="muted small">Kotaları platform yöneticisi belirler.</p>
-      </Panel>
+      <div className="stats">
+        <Stat icon="broadcast" label="Yayındaki kanal" value={live.length} live />
+        <Stat icon="channels" label="Kanal" value={o.usage.channels} limit={o.quotas.max_channels} />
+        <Stat icon="viewers" label="İzleyici hesabı" value={o.usage.viewers} limit={o.quotas.max_viewers} />
+        <Stat icon="sessions" label="Süren izleme" value={o.usage.connections} limit={o.quotas.max_connections} />
+      </div>
+      <p className="muted small">Kotaları platform yöneticisi belirler.</p>
+
+      {(o.usage.channels === 0 || o.usage.viewers === 0) && (
+        <Panel title="Başlarken">
+          <ol className="steps">
+            {steps.map((s) => (
+              <li key={s.title} className={s.done ? "done" : ""}>
+                <span className="step-mark">{s.done && <Icon name="check" size={14} />}</span>
+                <div>
+                  <strong>{s.title}</strong>
+                  <div className="muted small">{s.hint}</div>
+                </div>
+                {!s.done && (
+                  <button type="button" className="ghost" onClick={() => navigate(s.to)}>
+                    {s.action}
+                  </button>
+                )}
+              </li>
+            ))}
+          </ol>
+        </Panel>
+      )}
+
+      {live.length > 0 && (
+        <Panel title="Şu an yayında">
+          <ul className="live-list">
+            {live.map((c) => (
+              <li key={c.id}>
+                <Avatar name={c.name} src={c.logo_url} />
+                <span>{c.name}</span>
+                <LiveBadge />
+              </li>
+            ))}
+          </ul>
+        </Panel>
+      )}
+
       <Panel title="Bağlantı bilgileri">
         <CopyField label="OBS yayın sunucusu" value={o.ingest_url} />
         <CopyField label="İzleyicilerin oynatıcıya yazacağı sunucu" value={o.xtream_url} />
@@ -36,6 +100,7 @@ export function Categories() {
   const list = useLoad(() => api.get<Category[]>("/api/tenant/categories"));
   const [name, setName] = useState("");
   const action = useAction();
+  const { confirm, ask, toast } = useFeedback();
 
   const add = (e: FormEvent) => {
     e.preventDefault();
@@ -43,21 +108,34 @@ export function Categories() {
       await api.post("/api/tenant/categories", { name });
       setName("");
       await list.reload();
+      toast("Kategori eklendi.");
     });
   };
-  const rename = (c: Category) => {
-    const next = window.prompt("Kategorinin yeni adı:", c.name);
+  const rename = async (c: Category) => {
+    const next = await ask({
+      title: "Kategoriyi yeniden adlandır",
+      input: { label: "Yeni ad", initial: c.name, maxLength: 100 },
+      confirmLabel: "Kaydet",
+    });
     if (!next || next === c.name) return;
     void action.run(async () => {
       await api.patch(`/api/tenant/categories/${c.id}`, { name: next });
       await list.reload();
+      toast("Kategori adı değişti.");
     });
   };
-  const remove = (c: Category) => {
-    if (!window.confirm(`"${c.name}" silinsin mi? Bu kategorideki kanallar "Genel" altında görünür.`)) return;
+  const remove = async (c: Category) => {
+    const sure = await confirm({
+      title: `"${c.name}" silinsin mi?`,
+      body: 'Bu kategorideki kanallar oynatıcıda "Genel" altında görünür.',
+      confirmLabel: "Sil",
+      danger: true,
+    });
+    if (!sure) return;
     void action.run(async () => {
       await api.del(`/api/tenant/categories/${c.id}`);
       await list.reload();
+      toast("Kategori silindi.");
     });
   };
 
@@ -67,7 +145,7 @@ export function Categories() {
         <form className="row" onSubmit={add}>
           <label>
             Ad
-            <input required maxLength={100} value={name} onChange={(e) => setName(e.target.value)} />
+            <input required maxLength={100} placeholder="Spor" value={name} onChange={(e) => setName(e.target.value)} />
           </label>
           <button type="submit" disabled={action.busy}>
             Kategori ekle
@@ -75,11 +153,13 @@ export function Categories() {
         </form>
         <ErrorNote message={action.error} />
       </Panel>
-      <Panel title="Kategoriler">
+      <Panel title="Kategoriler" aside={list.data && list.data.length > 0 ? <span className="count">{list.data.length}</span> : null}>
         {!list.data ? (
           <Loading error={list.error} />
         ) : list.data.length === 0 ? (
-          <p className="muted">Henüz kategori yok. Kategorisiz kanallar oynatıcıda "Genel" altında görünür.</p>
+          <EmptyState icon="categories" title="Henüz kategori yok">
+            Kategorisiz kanallar oynatıcıda "Genel" altında görünür.
+          </EmptyState>
         ) : (
           <div className="table-wrap">
             <table>
@@ -88,10 +168,10 @@ export function Categories() {
                   <tr key={c.id}>
                     <td>{c.name}</td>
                     <td className="actions">
-                      <button type="button" className="ghost" disabled={action.busy} onClick={() => rename(c)}>
+                      <button type="button" className="ghost" disabled={action.busy} onClick={() => void rename(c)}>
                         Yeniden adlandır
                       </button>
-                      <button type="button" className="ghost danger-text" disabled={action.busy} onClick={() => remove(c)}>
+                      <button type="button" className="ghost danger-text" disabled={action.busy} onClick={() => void remove(c)}>
                         Sil
                       </button>
                     </td>
@@ -113,36 +193,63 @@ export function Channels() {
   const categories = useLoad(() => api.get<Category[]>("/api/tenant/categories"));
   const [opened, setOpened] = useState<{ id: number; mode: "obs" | "edit" } | null>(null);
   const action = useAction();
+  const { confirm, toast } = useFeedback();
   const cats = categories.data ?? [];
   const current = channels.data?.find((c) => c.id === opened?.id) ?? null;
+  const liveCount = channels.data?.filter((c) => c.live).length ?? 0;
 
-  const remove = (c: Channel) => {
-    const warning = c.live ? " Kanal şu an yayında; yayın ve izlemeler kesilir." : "";
-    if (!window.confirm(`"${c.name}" silinsin mi?${warning}`)) return;
+  const remove = async (c: Channel) => {
+    const sure = await confirm({
+      title: `"${c.name}" silinsin mi?`,
+      body: c.live ? "Kanal şu an yayında; yayın ve izlemeler kesilir." : "Kanal ve yayın anahtarı kalıcı olarak silinir.",
+      confirmLabel: "Sil",
+      danger: true,
+    });
+    if (!sure) return;
     void action.run(async () => {
       await api.del(`/api/tenant/channels/${c.id}`);
       setOpened(null);
       await channels.reload();
+      toast("Kanal silindi.");
     });
   };
 
   return (
     <>
-      <ChannelForm title="Yeni kanal" categories={cats} submitLabel="Kanal ekle" onSaved={() => void channels.reload()} />
+      <ChannelForm
+        title="Yeni kanal"
+        categories={cats}
+        submitLabel="Kanal ekle"
+        onSaved={(c) => {
+          void channels.reload();
+          // Yeni kanalın ilk işi OBS'e bağlanmaktır; ayarları hemen gösterilir.
+          if (c) setOpened({ id: c.id, mode: "obs" });
+        }}
+      />
 
-      <Panel title="Kanallar">
+      <Panel
+        title="Kanallar"
+        aside={
+          channels.data && channels.data.length > 0 ? (
+            <span className="count">
+              {channels.data.length} kanal{liveCount > 0 && ` · ${liveCount} yayında`}
+            </span>
+          ) : null
+        }
+      >
         <ErrorNote message={action.error} />
         {!channels.data ? (
           <Loading error={channels.error} />
         ) : channels.data.length === 0 ? (
-          <p className="muted">Henüz kanal yok. Yukarıdaki formla bir kanal ekleyin, sonra OBS ayarlarını kopyalayın.</p>
+          <EmptyState icon="channels" title="Henüz kanal yok">
+            Yukarıdaki formla bir kanal ekleyin; OBS ayarları hemen açılır.
+          </EmptyState>
         ) : (
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>No</th>
-                  <th>Ad</th>
+                  <th>Kanal</th>
                   <th>Kategori</th>
                   <th>Durum</th>
                   <th />
@@ -151,10 +258,17 @@ export function Channels() {
               <tbody>
                 {channels.data.map((c) => (
                   <tr key={c.id} className={c.id === opened?.id ? "selected" : ""}>
-                    <td className="muted">{c.id}</td>
-                    <td>{c.name}</td>
+                    <td>
+                      <span className="with-avatar">
+                        <Avatar name={c.name} src={c.logo_url} />
+                        <span>
+                          {c.name}
+                          <span className="sub">No {c.id}</span>
+                        </span>
+                      </span>
+                    </td>
                     <td>{cats.find((k) => k.id === c.category_id)?.name ?? <span className="muted">Genel</span>}</td>
-                    <td>{c.live ? <Badge tone="ok">Yayında</Badge> : <Badge tone="off">Çevrimdışı</Badge>}</td>
+                    <td>{c.live ? <LiveBadge /> : <Badge tone="off">Çevrimdışı</Badge>}</td>
                     <td className="actions">
                       <button type="button" className="ghost" onClick={() => setOpened({ id: c.id, mode: "obs" })}>
                         OBS ayarları
@@ -162,7 +276,7 @@ export function Channels() {
                       <button type="button" className="ghost" onClick={() => setOpened({ id: c.id, mode: "edit" })}>
                         Düzenle
                       </button>
-                      <button type="button" className="ghost danger-text" disabled={action.busy} onClick={() => remove(c)}>
+                      <button type="button" className="ghost danger-text" disabled={action.busy} onClick={() => void remove(c)}>
                         Sil
                       </button>
                     </td>
@@ -207,25 +321,31 @@ function ChannelForm({
   channel?: Channel;
   categories: Category[];
   submitLabel: string;
-  onSaved: () => void;
+  // created, yeni eklenen kanaldır; düzenlemede verilmez.
+  onSaved: (created?: Channel) => void;
   onClose?: () => void;
 }) {
   const [name, setName] = useState(channel?.name ?? "");
   const [categoryId, setCategoryId] = useState<number | null>(channel?.category_id ?? null);
   const [logoUrl, setLogoUrl] = useState(channel?.logo_url ?? "");
   const action = useAction();
+  const { toast } = useFeedback();
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
     void action.run(async () => {
       const body = { name, category_id: categoryId, logo_url: logoUrl.trim() };
-      if (channel) await api.patch(`/api/tenant/channels/${channel.id}`, body);
-      else await api.post("/api/tenant/channels", body);
-      if (!channel) {
-        setName("");
-        setLogoUrl("");
+      if (channel) {
+        await api.patch(`/api/tenant/channels/${channel.id}`, body);
+        toast("Kanal kaydedildi.");
+        onSaved();
+        return;
       }
-      onSaved();
+      const created = await api.post<Channel>("/api/tenant/channels", body);
+      setName("");
+      setLogoUrl("");
+      toast("Kanal eklendi.");
+      onSaved(created);
     });
   };
 
@@ -262,26 +382,34 @@ function ChannelForm({
 
 function ObsSettings({ channel, onClose, onChanged }: { channel: Channel; onClose: () => void; onChanged: () => void }) {
   const action = useAction();
-  const regenerate = () => {
-    const warning = channel.live ? " Kanal şu an yayında; yayın kesilir." : "";
-    if (!window.confirm(`Yayın anahtarı yenilensin mi? OBS'teki eski anahtar artık çalışmaz.${warning}`)) return;
+  const { confirm, toast } = useFeedback();
+  const regenerate = async () => {
+    const sure = await confirm({
+      title: "Yayın anahtarı yenilensin mi?",
+      body: `OBS'teki eski anahtar artık çalışmaz.${channel.live ? " Kanal şu an yayında; yayın kesilir." : ""}`,
+      confirmLabel: "Anahtarı yenile",
+      danger: true,
+    });
+    if (!sure) return;
     void action.run(async () => {
       await api.post(`/api/tenant/channels/${channel.id}/regenerate-secret`);
       onChanged();
+      toast("Yayın anahtarı yenilendi.");
     });
   };
   return (
     <Panel title={`OBS ayarları: ${channel.name}`} onClose={onClose}>
+      <p className="drawer-status">{channel.live ? <LiveBadge /> : <Badge tone="off">Çevrimdışı</Badge>}</p>
       <p className="muted small">OBS → Ayarlar → Yayın → Hizmet: "Özel". Aşağıdaki iki değeri yapıştırın.</p>
       <CopyField label="Sunucu" value={channel.ingest_url} />
       <CopyField label="Yayın anahtarı" value={channel.stream_key} secret />
       <p className="muted small">Yayın anahtarı gizlidir: ele geçiren kişi bu kanala yayın açabilir.</p>
-      <p className="muted small">
-        Gecikmeyi düşürmek için: OBS → Ayarlar → Çıkış → Çıkış kipi "Gelişmiş" → Yayın sekmesinde "Anahtar kare aralığı" 2 sn. Varsayılan
-        ayarda bu aralık 8 saniyeyi bulur; kanalı açan izleyici o kadar geriden başlar ve kanal geç açılır.
+      <p className="tip">
+        <strong>Gecikmeyi düşürmek için:</strong> OBS → Ayarlar → Çıkış → Çıkış kipi "Gelişmiş" → Yayın sekmesinde "Anahtar kare aralığı" 2
+        sn. Varsayılan ayarda bu aralık 8 saniyeyi bulur; kanalı açan izleyici o kadar geriden başlar ve kanal geç açılır.
       </p>
       <ErrorNote message={action.error} />
-      <button type="button" className="ghost" disabled={action.busy} onClick={regenerate}>
+      <button type="button" className="ghost" disabled={action.busy} onClick={() => void regenerate()}>
         Anahtarı yenile
       </button>
     </Panel>
@@ -300,6 +428,7 @@ export function Viewers() {
   const overview = useLoad(() => api.get<Overview>("/api/tenant/overview"));
   const [opened, setOpened] = useState<{ id: number; mode: "info" | "edit" } | null>(null);
   const action = useAction();
+  const { confirm, toast } = useFeedback();
   const current = viewers.data?.items.find((v) => v.id === opened?.id) ?? null;
   const reload = () => void viewers.reload();
   useEffect(() => {
@@ -308,28 +437,43 @@ export function Viewers() {
     const timer = window.setTimeout(() => (setQuery(search.trim()), setOffset(0)), 250);
     return () => window.clearTimeout(timer);
   }, [search]);
-  // Liste değişince (arama, sayfa) açık bilgi ya da düzenleme paneli kapanır; aksi halde
-  // görünmeyen bir izleyicinin paneli kaybolup geri gelirdi.
+  // Liste değişince (arama, sayfa) açık bilgi ya da düzenleme penceresi kapanır.
   const showPage = (next: number) => (setOpened(null), setOffset(next));
   // Silme sonrası boşalan son sayfada kalınmaz.
   useEffect(() => {
     if (viewers.data && viewers.data.items.length === 0 && offset > 0) setOffset(Math.max(0, offset - pageSize));
   }, [viewers.data]);
 
-  const toggle = (v: Viewer) => {
+  const toggle = async (v: Viewer) => {
     const status = v.status === "active" ? "suspended" : "active";
-    if (status === "suspended" && !window.confirm(`"${v.username}" askıya alınsın mı? Süren izlemesi birkaç saniye içinde kesilir.`)) return;
+    if (status === "suspended") {
+      const sure = await confirm({
+        title: `"${v.username}" askıya alınsın mı?`,
+        body: "Süren izlemesi birkaç saniye içinde kesilir. Hesabı istediğiniz zaman yeniden etkinleştirebilirsiniz.",
+        confirmLabel: "Askıya al",
+        danger: true,
+      });
+      if (!sure) return;
+    }
     void action.run(async () => {
       await api.patch(`/api/tenant/viewers/${v.id}`, { status });
       await viewers.reload();
+      toast(status === "suspended" ? "İzleyici askıya alındı." : "İzleyici etkinleştirildi.");
     });
   };
-  const remove = (v: Viewer) => {
-    if (!window.confirm(`"${v.username}" silinsin mi? Süren izlemesi kesilir ve hesap geri getirilemez.`)) return;
+  const remove = async (v: Viewer) => {
+    const sure = await confirm({
+      title: `"${v.username}" silinsin mi?`,
+      body: "Süren izlemesi kesilir ve hesap geri getirilemez.",
+      confirmLabel: "Sil",
+      danger: true,
+    });
+    if (!sure) return;
     void action.run(async () => {
       await api.del(`/api/tenant/viewers/${v.id}`);
       setOpened(null);
       await viewers.reload();
+      toast("İzleyici silindi.");
     });
   };
 
@@ -346,25 +490,21 @@ export function Viewers() {
         }}
       />
 
-      <Panel title="İzleyiciler">
+      <Panel title="İzleyiciler" aside={<SearchBox value={search} placeholder="Kullanıcı adında ara" onChange={(v) => (setOpened(null), setSearch(v))} />}>
         <ErrorNote message={action.error} />
         <ErrorNote message={viewers.data ? viewers.error : null} />
-        <div className="list-search">
-          <input
-            type="search"
-            placeholder="Kullanıcı adında ara"
-            aria-label="Kullanıcı adında ara"
-            value={search}
-            maxLength={64}
-            onChange={(e) => (setOpened(null), setSearch(e.target.value))}
-          />
-        </div>
         {!viewers.data ? (
           <Loading error={viewers.error} />
         ) : viewers.data.items.length === 0 ? (
-          <p className="muted">
-            {search.trim() ? "Aramayla eşleşen izleyici yok." : "Henüz izleyici yok. Yukarıdaki formla bir izleyici hesabı oluşturun."}
-          </p>
+          search.trim() ? (
+            <EmptyState icon="search" title="Aramayla eşleşen izleyici yok">
+              Kullanıcı adının bir parçasını yazmanız yeterli.
+            </EmptyState>
+          ) : (
+            <EmptyState icon="viewers" title="Henüz izleyici yok">
+              Yukarıdaki formla bir izleyici hesabı oluşturun; giriş bilgileri hemen gösterilir.
+            </EmptyState>
+          )
         ) : (
           <div className="table-wrap">
             <table>
@@ -382,7 +522,12 @@ export function Viewers() {
                   const expired = v.expires_at !== null && new Date(v.expires_at) <= new Date();
                   return (
                     <tr key={v.id} className={v.id === opened?.id ? "selected" : ""}>
-                      <td>{v.username}</td>
+                      <td>
+                        <span className="with-avatar">
+                          <Avatar name={v.username} />
+                          {v.username}
+                        </span>
+                      </td>
                       <td>
                         {v.status === "suspended" ? (
                           <Badge tone="warn">Askıda</Badge>
@@ -392,7 +537,7 @@ export function Viewers() {
                           <Badge tone="ok">Etkin</Badge>
                         )}
                       </td>
-                      <td>{formatDate(v.expires_at)}</td>
+                      <td>{v.expires_at ? formatDate(v.expires_at) : <span className="muted">Süresiz</span>}</td>
                       <td className="num">{v.max_connections}</td>
                       <td className="actions">
                         <button type="button" className="ghost" onClick={() => setOpened({ id: v.id, mode: "info" })}>
@@ -401,10 +546,10 @@ export function Viewers() {
                         <button type="button" className="ghost" onClick={() => setOpened({ id: v.id, mode: "edit" })}>
                           Düzenle
                         </button>
-                        <button type="button" className="ghost" disabled={action.busy} onClick={() => toggle(v)}>
+                        <button type="button" className="ghost" disabled={action.busy} onClick={() => void toggle(v)}>
                           {v.status === "active" ? "Askıya al" : "Etkinleştir"}
                         </button>
-                        <button type="button" className="ghost danger-text" disabled={action.busy} onClick={() => remove(v)}>
+                        <button type="button" className="ghost danger-text" disabled={action.busy} onClick={() => void remove(v)}>
                           Sil
                         </button>
                       </td>
@@ -441,6 +586,7 @@ function CreateViewer({ onCreated }: { onCreated: (v: Viewer) => void }) {
   const [maxConnections, setMaxConnections] = useState(1);
   const [expires, setExpires] = useState("");
   const action = useAction();
+  const { toast } = useFeedback();
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -452,6 +598,7 @@ function CreateViewer({ onCreated }: { onCreated: (v: Viewer) => void }) {
       });
       setUsername("");
       setExpires("");
+      toast("İzleyici eklendi.");
       onCreated(v);
     });
   };
@@ -491,11 +638,19 @@ function CreateViewer({ onCreated }: { onCreated: (v: Viewer) => void }) {
 
 function ViewerInfo({ viewer, server, onClose, onChanged }: { viewer: Viewer; server: string; onClose: () => void; onChanged: () => void }) {
   const action = useAction();
-  const regenerate = () => {
-    if (!window.confirm(`"${viewer.username}" için yeni şifre üretilsin mi? Süren izlemesi kesilir ve oynatıcısına yeni şifreyi girmesi gerekir.`)) return;
+  const { confirm, toast } = useFeedback();
+  const regenerate = async () => {
+    const sure = await confirm({
+      title: `"${viewer.username}" için yeni şifre üretilsin mi?`,
+      body: "Süren izlemesi kesilir ve oynatıcısına yeni şifreyi girmesi gerekir.",
+      confirmLabel: "Şifreyi yenile",
+      danger: true,
+    });
+    if (!sure) return;
     void action.run(async () => {
       await api.post(`/api/tenant/viewers/${viewer.id}/regenerate-password`);
       onChanged();
+      toast("Yeni şifre üretildi.");
     });
   };
   return (
@@ -506,7 +661,7 @@ function ViewerInfo({ viewer, server, onClose, onChanged }: { viewer: Viewer; se
       <CopyField label="Şifre" value={viewer.password} secret />
       <CopyField label="M3U listesi (Xtream desteklemeyen oynatıcılar için)" value={viewer.playlist_url} secret />
       <ErrorNote message={action.error} />
-      <button type="button" className="ghost" disabled={action.busy} onClick={regenerate}>
+      <button type="button" className="ghost" disabled={action.busy} onClick={() => void regenerate()}>
         Şifreyi yenile
       </button>
     </Panel>
@@ -517,6 +672,7 @@ function EditViewer({ viewer, onClose, onSaved }: { viewer: Viewer; onClose: () 
   const [maxConnections, setMaxConnections] = useState(viewer.max_connections);
   const [expires, setExpires] = useState(toLocalInput(viewer.expires_at));
   const action = useAction();
+  const { toast } = useFeedback();
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -525,6 +681,7 @@ function EditViewer({ viewer, onClose, onSaved }: { viewer: Viewer; onClose: () 
         max_connections: maxConnections,
         expires_at: fromLocalInput(expires),
       });
+      toast("İzleyici kaydedildi.");
       onSaved();
     });
   };
@@ -559,12 +716,22 @@ export function Sessions() {
     if (sessions.data && sessions.data.items.length === 0 && offset > 0) setOffset(Math.max(0, offset - pageSize));
   }, [sessions.data]);
   return (
-    <Panel title="Süren izlemeler">
+    <Panel
+      title="Süren izlemeler"
+      aside={
+        <span className="count refreshing" title="Liste 5 saniyede bir yenilenir">
+          <span className="pulse" />
+          {sessions.data ? `${sessions.data.total} izleme` : "canlı"}
+        </span>
+      }
+    >
       <ErrorNote message={sessions.data ? sessions.error : null} />
       {!sessions.data ? (
         <Loading error={sessions.error} />
       ) : sessions.data.items.length === 0 ? (
-        <p className="muted">Şu an izleyen yok. Liste 5 saniyede bir yenilenir.</p>
+        <EmptyState icon="sessions" title="Şu an izleyen yok">
+          Bir izleyici kanal açtığında burada görünür. Liste 5 saniyede bir yenilenir.
+        </EmptyState>
       ) : (
         <div className="table-wrap">
           <table>
@@ -575,20 +742,27 @@ export function Sessions() {
                 <th>Biçim</th>
                 <th>Ağ adresi</th>
                 <th>Sunucu</th>
-                <th>Başlangıç</th>
+                <th>Süre</th>
               </tr>
             </thead>
             <tbody>
               {sessions.data.items.map((s) => (
                 <tr key={s.id}>
-                  <td>{s.viewer}</td>
+                  <td>
+                    <span className="with-avatar">
+                      <Avatar name={s.viewer} />
+                      {s.viewer}
+                    </span>
+                  </td>
                   <td>{s.channel}</td>
-                  <td>{s.kind === "hls" ? "HLS" : "MPEG-TS"}</td>
+                  <td>
+                    <Badge tone="off">{s.kind === "hls" ? "HLS" : "MPEG-TS"}</Badge>
+                  </td>
                   <td>
                     <code>{s.ip}</code>
                   </td>
                   <td>{s.edge}</td>
-                  <td>{formatDate(s.started_at)}</td>
+                  <td title={`Başlangıç: ${formatDate(s.started_at)}`}>{since(s.started_at)}</td>
                 </tr>
               ))}
             </tbody>

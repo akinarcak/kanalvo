@@ -5,6 +5,39 @@ OBS ile yayın açılan, Xtream uyumlu oynatıcılardan izlenen çok kiracılı 
 - Tasarım: `docs/superpowers/specs/2026-10-05-streamhub-design.md`
 - SRS'in ölçülen davranışları: `docs/srs-findings.md`
 
+## Ekran görüntüleri
+
+Yönetim paneli iki role göre açılır: platform yöneticisi yayıncıları ve sunucuları, yayıncı kendi
+kanallarını ve izleyicilerini yönetir. Görüntüler deneme verisiyle alınmıştır.
+
+**Yayıncı**
+
+| Genel bakış | Kanallar |
+|---|---|
+| ![Yayıncı genel bakış](docs/ekran-goruntuleri/yayinci-genel-bakis.png) | ![Kanallar](docs/ekran-goruntuleri/yayinci-kanallar.png) |
+
+| OBS ayarları | İzleyiciler |
+|---|---|
+| ![OBS ayarları](docs/ekran-goruntuleri/yayinci-obs-ayarlari.png) | ![İzleyiciler](docs/ekran-goruntuleri/yayinci-izleyiciler.png) |
+
+| İzleyicinin giriş bilgileri | Süren izlemeler |
+|---|---|
+| ![Giriş bilgileri](docs/ekran-goruntuleri/yayinci-giris-bilgileri.png) | ![Oturumlar](docs/ekran-goruntuleri/yayinci-oturumlar.png) |
+
+**Platform yöneticisi**
+
+| Yayıncılar | Yayıncı ayrıntısı |
+|---|---|
+| ![Yayıncılar](docs/ekran-goruntuleri/yonetici-yayincilar.png) | ![Yayıncı ayrıntısı](docs/ekran-goruntuleri/yonetici-yayinci-ayrinti.png) |
+
+| Sunucular | Koyu tema |
+|---|---|
+| ![Sunucular](docs/ekran-goruntuleri/yonetici-sunucular.png) | ![Koyu tema](docs/ekran-goruntuleri/yonetici-koyu-tema.png) |
+
+| Giriş |
+|---|
+| ![Giriş](docs/ekran-goruntuleri/giris.png) |
+
 ## Bileşenler
 
 | Servis | Görevi | Dış port |

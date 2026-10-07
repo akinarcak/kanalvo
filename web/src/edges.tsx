@@ -1,11 +1,17 @@
 import { type FormEvent, useState } from "react";
 import { type Edge, api } from "./api";
-import { Badge, ErrorNote, Loading, Panel, formatDate, useAction, useLoad } from "./ui";
+import { Badge, ErrorNote, Loading, Panel, formatDate, since, useAction, useFeedback, useLoad } from "./ui";
 
 function EdgeStatus({ edge }: { edge: Edge }) {
   if (!edge.enabled) return <Badge tone="off">Devre dışı</Badge>;
   if (edge.healthy) return <Badge tone="ok">Sağlıklı</Badge>;
   return <Badge tone="warn">{edge.last_seen_at ? "Ulaşılamıyor" : "Sinyal bekleniyor"}</Badge>;
+}
+
+// lastSeen, son sinyalin ne kadar önce geldiğini yazar; yoklama aralığı içindeki sinyal "şimdi"dir.
+function lastSeen(iso: string): string {
+  const text = since(iso);
+  return text === "az önce" ? "şimdi" : `${text} önce`;
 }
 
 export function AdminEdges() {
@@ -16,7 +22,7 @@ export function AdminEdges() {
 
   return (
     <>
-      <p className="muted">
+      <p className="tip">
         İzleyiciler, sağlıklı ve etkin sunucular arasında ağırlıklarıyla orantılı olarak dağıtılır. Her sunucu 5 saniyede bir
         yoklanır; 15 saniye yanıt vermeyen sunucuya yeni izleyici gönderilmez.
       </p>
@@ -59,10 +65,12 @@ export function AdminEdges() {
                     </td>
                     <td className="num">{e.weight}</td>
                     <td className="num">{e.active_sessions}</td>
-                    <td>{e.last_seen_at ? formatDate(e.last_seen_at) : <span className="muted">Hiç</span>}</td>
+                    <td title={e.last_seen_at ? formatDate(e.last_seen_at) : undefined}>
+                      {e.last_seen_at ? lastSeen(e.last_seen_at) : <span className="muted">Hiç</span>}
+                    </td>
                     <td className="actions">
-                      <button type="button" className="ghost" onClick={() => setSelected(e.id === selected ? null : e.id)}>
-                        {e.id === selected ? "Kapat" : "Yönet"}
+                      <button type="button" className="ghost" onClick={() => setSelected(e.id)}>
+                        Yönet
                       </button>
                     </td>
                   </tr>
@@ -149,38 +157,51 @@ function EdgeDetail({
   const [controlURL, setControlURL] = useState(edge.control_url);
   const [pullIP, setPullIP] = useState(edge.pull_ip);
   const [weight, setWeight] = useState(edge.weight);
-  const [saved, setSaved] = useState(false);
   const [copied, setCopied] = useState(false);
   const action = useAction();
+  const { confirm, toast } = useFeedback();
   const path = `/api/admin/edges/${edge.id}`;
 
   const save = (e: FormEvent) => {
     e.preventDefault();
-    setSaved(false);
     void action.run(async () => {
       // Yerel sunucunun adresleri sunucu ayarlarından gelir; yalnızca adı ve ağırlığı değişir.
       const body = edge.builtin ? { name, weight } : { name, weight, base_url: baseURL, control_url: controlURL, pull_ip: pullIP };
       await api.patch(path, body);
-      setSaved(true);
+      toast("Değişiklikler kaydedildi.");
       onChanged();
     });
   };
 
-  const setEnabled = (enabled: boolean) => {
-    const question = enabled
-      ? `"${edge.name}" yeniden etkinleştirilsin mi?`
-      : `"${edge.name}" devre dışı bırakılsın mı? Yeni izleyici gönderilmez; süren izlemeler devam eder.`;
-    if (!window.confirm(question)) return;
+  const setEnabled = async (enabled: boolean) => {
+    const sure = await confirm(
+      enabled
+        ? { title: `"${edge.name}" yeniden etkinleştirilsin mi?`, confirmLabel: "Etkinleştir" }
+        : {
+            title: `"${edge.name}" devre dışı bırakılsın mı?`,
+            body: "Yeni izleyici gönderilmez; süren izlemeler devam eder.",
+            confirmLabel: "Devre dışı bırak",
+          },
+    );
+    if (!sure) return;
     void action.run(async () => {
       await api.patch(path, { enabled });
+      toast(enabled ? "Sunucu etkinleştirildi." : "Sunucu devre dışı bırakıldı.");
       onChanged();
     });
   };
 
-  const remove = () => {
-    if (!window.confirm(`"${edge.name}" silinsin mi? Bu sunucuda süren izlemeler kesilmez; önce devre dışı bırakıp boşalmasını bekleyin.`)) return;
+  const remove = async () => {
+    const sure = await confirm({
+      title: `"${edge.name}" silinsin mi?`,
+      body: "Bu sunucuda süren izlemeler kesilmez; önce devre dışı bırakıp boşalmasını bekleyin.",
+      confirmLabel: "Sil",
+      danger: true,
+    });
+    if (!sure) return;
     void action.run(async () => {
       await api.del(path);
+      toast("Sunucu silindi.");
       onDeleted();
     });
   };
@@ -197,6 +218,10 @@ function EdgeDetail({
 
   return (
     <Panel title={`Sunucu: ${edge.name}`} onClose={onClose}>
+      <p className="drawer-status">
+        <EdgeStatus edge={edge} />
+        <span className="muted small">{edge.active_sessions} izleme</span>
+      </p>
       <form className="stack" onSubmit={save}>
         <div className="row">
           <label>
@@ -230,22 +255,21 @@ function EdgeDetail({
           </div>
         )}
         <ErrorNote message={action.error} />
-        {saved && <p className="note ok">Değişiklikler kaydedildi.</p>}
-        <div className="row">
+        <div className="drawer-actions">
           <button type="submit" disabled={action.busy}>
             Kaydet
           </button>
           {edge.enabled ? (
-            <button type="button" className="ghost" disabled={action.busy} onClick={() => setEnabled(false)}>
+            <button type="button" className="ghost" disabled={action.busy} onClick={() => void setEnabled(false)}>
               Devre dışı bırak
             </button>
           ) : (
-            <button type="button" className="ghost" disabled={action.busy} onClick={() => setEnabled(true)}>
+            <button type="button" className="ghost" disabled={action.busy} onClick={() => void setEnabled(true)}>
               Yeniden etkinleştir
             </button>
           )}
           {!edge.builtin && (
-            <button type="button" className="danger" disabled={action.busy} onClick={remove}>
+            <button type="button" className="ghost danger-text" disabled={action.busy} onClick={() => void remove()}>
               Sil
             </button>
           )}
