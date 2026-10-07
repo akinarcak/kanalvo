@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"streamhub/internal/httpserve"
+	"kanalvo/internal/httpserve"
 )
 
 func freeAddr(t *testing.T) string {

@@ -10,7 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"streamhub/internal/store"
+	"kanalvo/internal/store"
 )
 
 // Bu dosyadaki her işlem yayıncı kimliğini a.id'den (oturumdan) alır.

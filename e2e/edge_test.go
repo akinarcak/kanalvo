@@ -18,7 +18,7 @@ import (
 const (
 	edgeURL  = "http://localhost:8090" // ikinci sunucunun izleyicilere açık adresi
 	edgePort = "8090"
-	edgeSRS  = "streamhub-edge-edge-srs-1"
+	edgeSRS  = "kanalvo-edge-edge-srs-1"
 )
 
 // edgeCompose, uzak edge'in Compose projesini ana sunucunun ağına bağlı olarak yönetir.
@@ -107,7 +107,7 @@ func dockerValue(t *testing.T, args ...string) string {
 func TestSecondServerSharesTheViewers(t *testing.T) {
 	stamp := time.Now().UnixNano()
 	var created struct{ Email, Password string }
-	if err := json.Unmarshal(compose(t, "exec", "-T", "api", "streamhub", "create-admin", fmt.Sprintf("edge-yonetici-%d@example.com", stamp)), &created); err != nil {
+	if err := json.Unmarshal(compose(t, "exec", "-T", "api", "kanalvo", "create-admin", fmt.Sprintf("edge-yonetici-%d@example.com", stamp)), &created); err != nil {
 		t.Fatalf("create-admin çıktısı çözülemedi: %v", err)
 	}
 	admin := newPanelClient(t)
@@ -177,7 +177,7 @@ func TestSecondServerSharesTheViewers(t *testing.T) {
 		edgeCompose(t, env, "down", "-t", "2")
 		// Kayıt kalırsa sonraki testlerin izleyicileri olmayan bir sunucuya yönlendirilebilir.
 		req, _ := http.NewRequest(http.MethodDelete, panelURL+edgePath, nil)
-		req.Header.Set("X-StreamHub-Panel", "1")
+		req.Header.Set("X-Kanalvo-Panel", "1")
 		if resp, err := admin.http.Do(req); err == nil {
 			resp.Body.Close()
 		}
@@ -187,7 +187,7 @@ func TestSecondServerSharesTheViewers(t *testing.T) {
 	waitFor(t, "edge'in sağlık sinyali vermesi", 40*time.Second, func() bool { return edgeByID(admin, edge.ID).Healthy })
 
 	// Yayını başlat.
-	const publisher = "sh-e2e-edge-pub"
+	const publisher = "kanalvo-e2e-edge-pub"
 	compose(t, "--profile", "e2e", "run", "-d", "--rm", "--name", publisher, "ffmpeg",
 		"-re", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=25", "-f", "lavfi", "-i", "sine=frequency=440",
 		"-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-g", "50", "-pix_fmt", "yuv420p",
@@ -220,7 +220,7 @@ func TestSecondServerSharesTheViewers(t *testing.T) {
 			t.Fatalf("çekme adresi kayıtlı olmayan edge origin'den yayın alabildi (%d. deneme)", i+1)
 		}
 	}
-	pullIP := dockerValue(t, "inspect", "-f", `{{(index .NetworkSettings.Networks "streamhub_default").IPAddress}}`, edgeSRS)
+	pullIP := dockerValue(t, "inspect", "-f", `{{(index .NetworkSettings.Networks "kanalvo_default").IPAddress}}`, edgeSRS)
 	admin.call("PATCH", edgePath, map[string]any{"pull_ip": pullIP}, nil, http.StatusOK)
 
 	// 3. Edge'den kesintisiz .ts.
@@ -247,7 +247,7 @@ func TestSecondServerSharesTheViewers(t *testing.T) {
 	// nginx isteği bitince kaydeder: süren izleme henüz kayıtta yoktur, okunan satır 3. adımdaki
 	// tamamlanmış .ts isteğine aittir (aynı test sürecinden, yani aynı adresten).
 	viewerIP := ""
-	for _, line := range strings.Split(dockerValue(t, "logs", "--tail", "200", "streamhub-edge-edge-nginx-1"), "\n") {
+	for _, line := range strings.Split(dockerValue(t, "logs", "--tail", "200", "kanalvo-edge-edge-nginx-1"), "\n") {
 		if ip, rest, found := strings.Cut(line, " "); found && strings.Contains(rest, fmt.Sprintf(`"GET /live/%d.ts?`, channel.ID)) {
 			viewerIP = ip
 		}

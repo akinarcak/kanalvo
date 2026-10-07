@@ -1,4 +1,4 @@
-# StreamHub Plan 1 — Tek Kanal Uçtan Uca
+# Kanalvo Plan 1 — Tek Kanal Uçtan Uca
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.26, `net/http` (standart kütüphane yönlendiricisi), `github.com/jackc/pgx/v5`, PostgreSQL 16, SRS 5 (`ossrs/srs:5`), Docker Compose.
 
-**Spec:** `docs/superpowers/specs/2026-10-05-streamhub-design.md`
+**Spec:** `docs/superpowers/specs/2026-10-05-kanalvo-design.md`
 
 Bu plan, spec'in "Geliştirme sırası" bölümündeki 1. adımı kapsar. Sonraki adımlar ayrı planlardır ve bu planın Görev 1'deki bulgularına dayanır:
 
@@ -21,7 +21,7 @@ Bu plan, spec'in "Geliştirme sırası" bölümündeki 1. adımı kapsar. Sonrak
 
 ## Global Constraints
 
-- Go sürümü 1.26; `go.mod` içinde `go 1.26`. Modül adı `streamhub`.
+- Go sürümü 1.26; `go.mod` içinde `go 1.26`. Modül adı `kanalvo`.
 - HTTP yönlendirmesi yalnızca standart `net/http.ServeMux` ile yapılır; ek web çatısı eklenmez.
 - Tek veritabanı sürücüsü `github.com/jackc/pgx/v5`. Redis ve ORM yok.
 - Testler gerçek PostgreSQL'e karşı çalışır; paketler aynı test veritabanını paylaştığı için komut her zaman `go test -p 1 ./...` biçimindedir.
@@ -59,7 +59,7 @@ Bu plan, spec'in "Geliştirme sırası" bölümündeki 1. adımı kapsar. Sonrak
 | `internal/hooks/hooks.go` | SRS yayın ve izleme sorguları |
 | `internal/play/play.go` | `/live/...` yönlendirmesi |
 | `internal/reconcile/reconcile.go` | SRS'teki gerçek yayınlarla kanal durumunu eşitler |
-| `cmd/streamhub/main.go` | `serve` ve `seed-dev` komutları |
+| `cmd/kanalvo/main.go` | `serve` ve `seed-dev` komutları |
 | `e2e/e2e_test.go` | Uçtan uca test |
 
 ---
@@ -76,13 +76,13 @@ Bu görev bir kapıdır: spec'in 2. bölümündeki üç SRS varsayımı burada g
 
 **Interfaces:**
 - Consumes: yok.
-- Produces: `docker compose` servisleri `postgres` (5432), `srs` (1935 RTMP, 8080 HTTP, 127.0.0.1:1985 API), `ffmpeg` (profil `e2e`). SRS sorgu adresleri `${HOOK_BASE}/publish`, `/unpublish`, `/play`, `/stop`. Test veritabanı `postgres://streamhub:streamhub@localhost:5432/streamhub_test?sslmode=disable`.
+- Produces: `docker compose` servisleri `postgres` (5432), `srs` (1935 RTMP, 8080 HTTP, 127.0.0.1:1985 API), `ffmpeg` (profil `e2e`). SRS sorgu adresleri `${HOOK_BASE}/publish`, `/unpublish`, `/play`, `/stop`. Test veritabanı `postgres://kanalvo:kanalvo@localhost:5432/kanalvo_test?sslmode=disable`.
 
 - [ ] **Step 1: Modülü ve yok sayılacak dosyaları oluştur**
 
 ```bash
 cd /d/Projects/streamhub
-go mod init streamhub
+go mod init kanalvo
 ```
 
 `.gitignore`:
@@ -187,7 +187,7 @@ vhost __defaultVhost__ {
 `deploy/postgres/init.sql`:
 
 ```sql
-CREATE DATABASE streamhub_test OWNER streamhub;
+CREATE DATABASE kanalvo_test OWNER kanalvo;
 ```
 
 `docker-compose.yml`:
@@ -197,16 +197,16 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: streamhub
-      POSTGRES_PASSWORD: streamhub
-      POSTGRES_DB: streamhub
+      POSTGRES_USER: kanalvo
+      POSTGRES_PASSWORD: kanalvo
+      POSTGRES_DB: kanalvo
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
       - "127.0.0.1:5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U streamhub -d streamhub"]
+      test: ["CMD-SHELL", "pg_isready -U kanalvo -d kanalvo"]
       interval: 2s
       timeout: 3s
       retries: 30
@@ -537,8 +537,8 @@ import (
 	"testing"
 	"time"
 
-	"streamhub/internal/store"
-	"streamhub/internal/testdb"
+	"kanalvo/internal/store"
+	"kanalvo/internal/testdb"
 )
 
 func must[T any](v T, err error) T {
@@ -682,7 +682,7 @@ go get github.com/jackc/pgx/v5@latest
 go test -p 1 ./internal/store/
 ```
 
-Expected: FAIL, `package streamhub/internal/testdb is not in std` veya `undefined: store.ErrNotFound`
+Expected: FAIL, `package kanalvo/internal/testdb is not in std` veya `undefined: store.ErrNotFound`
 
 - [ ] **Step 7: Depoyu yaz**
 
@@ -934,10 +934,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"streamhub/internal/store"
+	"kanalvo/internal/store"
 )
 
-const defaultURL = "postgres://streamhub:streamhub@localhost:5432/streamhub_test?sslmode=disable"
+const defaultURL = "postgres://kanalvo:kanalvo@localhost:5432/kanalvo_test?sslmode=disable"
 
 func New(t *testing.T) *store.Store {
 	t.Helper()
@@ -976,7 +976,7 @@ go mod tidy
 go test -p 1 ./...
 ```
 
-Expected: `ok streamhub/internal/config`, `ok streamhub/internal/store`
+Expected: `ok kanalvo/internal/config`, `ok kanalvo/internal/store`
 
 - [ ] **Step 9: Commit**
 
@@ -1191,10 +1191,10 @@ import (
 	"testing"
 	"time"
 
-	"streamhub/internal/hooks"
-	"streamhub/internal/store"
-	"streamhub/internal/testdb"
-	"streamhub/internal/token"
+	"kanalvo/internal/hooks"
+	"kanalvo/internal/store"
+	"kanalvo/internal/testdb"
+	"kanalvo/internal/token"
 )
 
 const hookSecret = "hook-secret-0123456789"
@@ -1464,8 +1464,8 @@ import (
 	"strings"
 	"time"
 
-	"streamhub/internal/store"
-	"streamhub/internal/token"
+	"kanalvo/internal/store"
+	"kanalvo/internal/token"
 )
 
 const app = "live"
@@ -1647,10 +1647,10 @@ import (
 	"testing"
 	"time"
 
-	"streamhub/internal/play"
-	"streamhub/internal/store"
-	"streamhub/internal/testdb"
-	"streamhub/internal/token"
+	"kanalvo/internal/play"
+	"kanalvo/internal/store"
+	"kanalvo/internal/testdb"
+	"kanalvo/internal/token"
 )
 
 const edge = "http://edge.test:8080"
@@ -1821,8 +1821,8 @@ import (
 	"strings"
 	"time"
 
-	"streamhub/internal/store"
-	"streamhub/internal/token"
+	"kanalvo/internal/store"
+	"kanalvo/internal/token"
 )
 
 type Handler struct {
@@ -1944,9 +1944,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"streamhub/internal/reconcile"
-	"streamhub/internal/store"
-	"streamhub/internal/testdb"
+	"kanalvo/internal/reconcile"
+	"kanalvo/internal/store"
+	"kanalvo/internal/testdb"
 )
 
 func must[T any](v T, err error) T {
@@ -2062,7 +2062,7 @@ import (
 	"strconv"
 	"time"
 
-	"streamhub/internal/store"
+	"kanalvo/internal/store"
 )
 
 // maxStreams, SRS'ten tek istekte istenen yayın sayısıdır; SRS varsayılan olarak yalnızca 10 döner.
@@ -2166,13 +2166,13 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ### Task 7: Program, kapsayıcı ve uçtan uca test
 
 **Files:**
-- Create: `cmd/streamhub/main.go`, `Dockerfile`, `.dockerignore`, `README.md`
+- Create: `cmd/kanalvo/main.go`, `Dockerfile`, `.dockerignore`, `README.md`
 - Modify: `docker-compose.yml` (`api` servisi eklenir)
 - Test: `e2e/e2e_test.go`
 
 **Interfaces:**
 - Consumes: `config.Load`; `store.Open`, `Migrate`, `CreateTenant`, `CreateChannel`, `CreateViewer`; `token.NewSigner`; `hooks.New(...).Register(mux, secret)`; `play.New(...).Register(mux)`; `reconcile.New(...).Run(ctx, interval)`.
-- Produces: `streamhub serve` (HTTP sunucusu, `GET /healthz` → 200 `ok`), `streamhub seed-dev` (stdout'a tek satır JSON: `{"channel_id":<sayı>,"stream_secret":"…","username":"…","password":"…"}`). Compose servisi `api` (8000).
+- Produces: `kanalvo serve` (HTTP sunucusu, `GET /healthz` → 200 `ok`), `kanalvo seed-dev` (stdout'a tek satır JSON: `{"channel_id":<sayı>,"stream_secret":"…","username":"…","password":"…"}`). Compose servisi `api` (8000).
 
 - [ ] **Step 1: Uçtan uca testi yaz**
 
@@ -2200,7 +2200,7 @@ import (
 const (
 	apiURL  = "http://localhost:8000"
 	edgeURL = "http://localhost:8080"
-	pubName = "sh-e2e-pub"
+	pubName = "kanalvo-e2e-pub"
 )
 
 type seed struct {
@@ -2287,7 +2287,7 @@ func firstSegment(playlist string) string {
 
 func TestSingleChannelEndToEnd(t *testing.T) {
 	var s seed
-	if err := json.Unmarshal(compose(t, "exec", "-T", "api", "streamhub", "seed-dev"), &s); err != nil {
+	if err := json.Unmarshal(compose(t, "exec", "-T", "api", "kanalvo", "seed-dev"), &s); err != nil {
 		t.Fatalf("seed-dev çıktısı çözülemedi: %v", err)
 	}
 
@@ -2369,7 +2369,7 @@ Expected: FAIL, `docker compose exec -T: ... service "api" is not running` (veya
 
 - [ ] **Step 3: Programı yaz**
 
-`cmd/streamhub/main.go`:
+`cmd/kanalvo/main.go`:
 
 ```go
 package main
@@ -2389,12 +2389,12 @@ import (
 	"syscall"
 	"time"
 
-	"streamhub/internal/config"
-	"streamhub/internal/hooks"
-	"streamhub/internal/play"
-	"streamhub/internal/reconcile"
-	"streamhub/internal/store"
-	"streamhub/internal/token"
+	"kanalvo/internal/config"
+	"kanalvo/internal/hooks"
+	"kanalvo/internal/play"
+	"kanalvo/internal/reconcile"
+	"kanalvo/internal/store"
+	"kanalvo/internal/token"
 )
 
 const (
@@ -2408,13 +2408,13 @@ func main() {
 		"seed-dev": seedDev,
 	}
 	if len(os.Args) != 2 || commands[os.Args[1]] == nil {
-		fmt.Fprintln(os.Stderr, "kullanım: streamhub serve | seed-dev")
+		fmt.Fprintln(os.Stderr, "kullanım: kanalvo serve | seed-dev")
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := commands[os.Args[1]](ctx); err != nil {
-		log.Fatalf("streamhub %s: %v", os.Args[1], err)
+		log.Fatalf("kanalvo %s: %v", os.Args[1], err)
 	}
 }
 
@@ -2444,7 +2444,7 @@ func serve(ctx context.Context) error {
 		defer cancel()
 		srv.Shutdown(shutdownCtx)
 	}()
-	log.Printf("streamhub %s adresinde dinliyor", cfg.HTTPAddr)
+	log.Printf("kanalvo %s adresinde dinliyor", cfg.HTTPAddr)
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
@@ -2520,14 +2520,14 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -o /out/streamhub ./cmd/streamhub
+RUN CGO_ENABLED=0 go build -o /out/kanalvo ./cmd/kanalvo
 
 FROM alpine:3.22
-RUN adduser -D -u 10001 streamhub
-USER streamhub
-COPY --from=build /out/streamhub /usr/local/bin/streamhub
+RUN adduser -D -u 10001 kanalvo
+USER kanalvo
+COPY --from=build /out/kanalvo /usr/local/bin/kanalvo
 EXPOSE 8000
-ENTRYPOINT ["streamhub"]
+ENTRYPOINT ["kanalvo"]
 CMD ["serve"]
 ```
 
@@ -2537,7 +2537,7 @@ CMD ["serve"]
   api:
     build: .
     environment:
-      DATABASE_URL: postgres://streamhub:streamhub@postgres:5432/streamhub?sslmode=disable
+      DATABASE_URL: postgres://kanalvo:kanalvo@postgres:5432/kanalvo?sslmode=disable
       SRS_API_URL: http://srs:1985
       TOKEN_KEY: ${TOKEN_KEY}
       HOOK_SECRET: ${HOOK_SECRET}
@@ -2559,17 +2559,17 @@ CMD ["serve"]
 `README.md`:
 
 ````markdown
-# StreamHub
+# Kanalvo
 
 OBS ile yayın açılan, Xtream uyumlu oynatıcılardan izlenen çok kiracılı canlı yayın platformu.
-Tasarım: `docs/superpowers/specs/2026-10-05-streamhub-design.md`
+Tasarım: `docs/superpowers/specs/2026-10-05-kanalvo-design.md`
 
 ## Yerelde çalıştırma
 
 ```bash
 cp .env.example .env
 docker compose up -d --build --wait
-docker compose exec -T api streamhub seed-dev
+docker compose exec -T api kanalvo seed-dev
 ```
 
 `seed-dev` çıktısındaki değerlerle:
@@ -2600,7 +2600,7 @@ docker compose up -d --build --wait
 go test -tags e2e -count=1 ./e2e/
 ```
 
-Expected: `ok streamhub/e2e`
+Expected: `ok kanalvo/e2e`
 
 Test "imzasız veya sahte imzalı istek yayın döndürdü" ile başarısız olursa bu bir güvenlik açığıdır: SRS izleme sorgusunu o istek türü için göndermiyor demektir. `docs/srs-findings.md` dosyasındaki 2., 3. ve 8. satırlarla karşılaştır, DUR ve insan ortağa bildir.
 
@@ -2612,7 +2612,7 @@ Expected: tüm paketler `ok`, `go vet` çıktısı boş
 - [ ] **Step 8: OBS ve gerçek oynatıcıyla elle doğrula**
 
 ```bash
-docker compose exec -T api streamhub seed-dev
+docker compose exec -T api kanalvo seed-dev
 ```
 
 1. Çıktıdaki değerlerle OBS'i README'deki gibi ayarla ve yayını başlat.

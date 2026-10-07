@@ -1,4 +1,4 @@
-module streamhub
+module kanalvo
 
 go 1.26.5
 

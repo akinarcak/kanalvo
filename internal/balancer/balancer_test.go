@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"streamhub/internal/balancer"
-	"streamhub/internal/store"
-	"streamhub/internal/testdb"
+	"kanalvo/internal/balancer"
+	"kanalvo/internal/store"
+	"kanalvo/internal/testdb"
 )
 
 const window = 15 * time.Second

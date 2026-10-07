@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"streamhub/internal/srsapi"
-	"streamhub/internal/store"
+	"kanalvo/internal/srsapi"
+	"kanalvo/internal/store"
 )
 
 const (

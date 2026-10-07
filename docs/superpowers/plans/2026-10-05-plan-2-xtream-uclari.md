@@ -1,4 +1,4 @@
-# StreamHub Plan 2 — Xtream Uçları
+# Kanalvo Plan 2 — Xtream Uçları
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
 
@@ -8,7 +8,7 @@
 
 **Tech Stack:** Plan 1 ile aynı (Go 1.26, `net/http`, pgx v5, PostgreSQL 16).
 
-**Spec:** `docs/superpowers/specs/2026-10-05-streamhub-design.md` (bölüm 4, 5 "Xtream uçları", 6, 7)
+**Spec:** `docs/superpowers/specs/2026-10-05-kanalvo-design.md` (bölüm 4, 5 "Xtream uçları", 6, 7)
 
 ## Global Constraints
 
@@ -54,7 +54,7 @@ Spec'ten bilinçli sapma: EPG eylemleri spec'te "boş liste" olarak geçer; Xtre
 | `internal/play/play.go` | `auth` kullanır; kısa adres biçimi ve uzantısız dosya adı |
 | `internal/xtream/xtream.go` | `player_api.php`, `get.php`, `xmltv.php` |
 | `internal/config/config.go` | `PUBLIC_BASE_URL`, `TRUST_PROXY_HEADERS`, `LOGIN_MAX_FAILURES`, `LOGIN_FAILURE_WINDOW` |
-| `cmd/streamhub/main.go` | Bağlama; `seed-dev` çıktısı değişmez |
+| `cmd/kanalvo/main.go` | Bağlama; `seed-dev` çıktısı değişmez |
 | `e2e/e2e_test.go` | Giriş → kanal listesi → M3U → izleme akışı |
 
 ## Görevler

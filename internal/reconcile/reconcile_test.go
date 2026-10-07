@@ -7,9 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"streamhub/internal/reconcile"
-	"streamhub/internal/store"
-	"streamhub/internal/testdb"
+	"kanalvo/internal/reconcile"
+	"kanalvo/internal/store"
+	"kanalvo/internal/testdb"
 )
 
 func must[T any](v T, err error) T {

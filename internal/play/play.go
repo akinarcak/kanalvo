@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"streamhub/internal/auth"
-	"streamhub/internal/balancer"
-	"streamhub/internal/store"
-	"streamhub/internal/token"
+	"kanalvo/internal/auth"
+	"kanalvo/internal/balancer"
+	"kanalvo/internal/store"
+	"kanalvo/internal/token"
 )
 
 type Options struct {

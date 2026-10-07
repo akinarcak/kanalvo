@@ -1,4 +1,4 @@
-# StreamHub — Tasarım Dokümanı
+# Kanalvo — Tasarım Dokümanı
 
 Tarih: 2026-10-05
 Durum: Uygulandı (Plan 1-5)

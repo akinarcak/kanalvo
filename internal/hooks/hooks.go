@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"streamhub/internal/session"
-	"streamhub/internal/store"
-	"streamhub/internal/token"
+	"kanalvo/internal/session"
+	"kanalvo/internal/store"
+	"kanalvo/internal/token"
 )
 
 const app = "live"

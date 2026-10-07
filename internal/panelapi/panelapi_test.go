@@ -11,13 +11,13 @@ import (
 	"testing"
 	"time"
 
-	"streamhub/internal/panelapi"
-	"streamhub/internal/passhash"
-	"streamhub/internal/ratelimit"
-	"streamhub/internal/session"
-	"streamhub/internal/session/sessiontest"
-	"streamhub/internal/store"
-	"streamhub/internal/testdb"
+	"kanalvo/internal/panelapi"
+	"kanalvo/internal/passhash"
+	"kanalvo/internal/ratelimit"
+	"kanalvo/internal/session"
+	"kanalvo/internal/session/sessiontest"
+	"kanalvo/internal/store"
+	"kanalvo/internal/testdb"
 )
 
 const (
@@ -100,7 +100,7 @@ func (c *client) do(method, path string, body any) response {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if method != http.MethodGet && !c.noCSRF {
-		req.Header.Set("X-StreamHub-Panel", "1")
+		req.Header.Set("X-Kanalvo-Panel", "1")
 	}
 	if c.cookie != nil {
 		req.AddCookie(c.cookie)
@@ -108,7 +108,7 @@ func (c *client) do(method, path string, body any) response {
 	rec := httptest.NewRecorder()
 	c.f.mux.ServeHTTP(rec, req)
 	for _, ck := range rec.Result().Cookies() {
-		if ck.Name == "sh_panel" {
+		if ck.Name == "kanalvo_panel" {
 			if ck.MaxAge < 0 {
 				c.cookie = nil
 			} else {

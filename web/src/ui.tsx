@@ -65,7 +65,7 @@ export function navigate(to: string) {
 // --- tema ---
 
 export type Theme = "auto" | "light" | "dark";
-const themeKey = "streamhub-tema";
+const themeKey = "kanalvo-tema";
 
 function storedTheme(): Theme {
   try {

@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"streamhub/internal/auth"
-	"streamhub/internal/ratelimit"
-	"streamhub/internal/store"
-	"streamhub/internal/testdb"
+	"kanalvo/internal/auth"
+	"kanalvo/internal/ratelimit"
+	"kanalvo/internal/store"
+	"kanalvo/internal/testdb"
 )
 
 const maxFailures = 3

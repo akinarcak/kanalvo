@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"streamhub/internal/store"
+	"kanalvo/internal/store"
 )
 
 // İzleme türleri.

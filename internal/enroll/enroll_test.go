@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"streamhub/internal/enroll"
-	"streamhub/internal/store"
-	"streamhub/internal/testdb"
+	"kanalvo/internal/enroll"
+	"kanalvo/internal/store"
+	"kanalvo/internal/testdb"
 )
 
 const (
@@ -253,7 +253,7 @@ exec wget -q -O - --post-data "$data" "$url"
 	}
 	run := func() (string, error) {
 		cmd := exec.Command("sh", scriptPath)
-		cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "STREAMHUB_EDGE_DIR="+dir, "EDGE_PORT=8090")
+		cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "KANALVO_EDGE_DIR="+dir, "EDGE_PORT=8090")
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}

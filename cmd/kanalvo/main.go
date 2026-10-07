@@ -18,24 +18,24 @@ import (
 	"syscall"
 	"time"
 
-	"streamhub/internal/auth"
-	"streamhub/internal/balancer"
-	"streamhub/internal/config"
-	"streamhub/internal/enroll"
-	"streamhub/internal/hlsgw"
-	"streamhub/internal/hooks"
-	"streamhub/internal/httpserve"
-	"streamhub/internal/panelapi"
-	"streamhub/internal/panelui"
-	"streamhub/internal/passhash"
-	"streamhub/internal/play"
-	"streamhub/internal/ratelimit"
-	"streamhub/internal/reconcile"
-	"streamhub/internal/session"
-	"streamhub/internal/srsapi"
-	"streamhub/internal/store"
-	"streamhub/internal/token"
-	"streamhub/internal/xtream"
+	"kanalvo/internal/auth"
+	"kanalvo/internal/balancer"
+	"kanalvo/internal/config"
+	"kanalvo/internal/enroll"
+	"kanalvo/internal/hlsgw"
+	"kanalvo/internal/hooks"
+	"kanalvo/internal/httpserve"
+	"kanalvo/internal/panelapi"
+	"kanalvo/internal/panelui"
+	"kanalvo/internal/passhash"
+	"kanalvo/internal/play"
+	"kanalvo/internal/ratelimit"
+	"kanalvo/internal/reconcile"
+	"kanalvo/internal/session"
+	"kanalvo/internal/srsapi"
+	"kanalvo/internal/store"
+	"kanalvo/internal/token"
+	"kanalvo/internal/xtream"
 )
 
 const (
@@ -62,13 +62,13 @@ func main() {
 		"reset-admin-password": resetAdminPassword,
 	}
 	if len(os.Args) < 2 || commands[os.Args[1]] == nil {
-		fmt.Fprintln(os.Stderr, "kullanım: streamhub serve | seed-dev | create-admin <e-posta> | reset-admin-password <e-posta> | set-tenant-status <yayıncı no> <active|suspended>")
+		fmt.Fprintln(os.Stderr, "kullanım: kanalvo serve | seed-dev | create-admin <e-posta> | reset-admin-password <e-posta> | set-tenant-status <yayıncı no> <active|suspended>")
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := commands[os.Args[1]](ctx, os.Args[2:]); err != nil {
-		log.Fatalf("streamhub %s: %v", os.Args[1], err)
+		log.Fatalf("kanalvo %s: %v", os.Args[1], err)
 	}
 }
 
@@ -133,7 +133,7 @@ func serve(ctx context.Context) error {
 
 	go reconcile.New(st, cfg.SRSAPIURL, reconcileGrace).Run(ctx, reconcileInterval)
 
-	log.Printf("streamhub dinliyor: izleyiciler %s, SRS sorguları %s, panel %s", cfg.HTTPAddr, cfg.HooksAddr, cfg.PanelAddr)
+	log.Printf("kanalvo dinliyor: izleyiciler %s, SRS sorguları %s, panel %s", cfg.HTTPAddr, cfg.HooksAddr, cfg.PanelAddr)
 	return httpserve.Run(ctx, shutdownGrace,
 		httpserve.New(cfg.HTTPAddr, mux), httpserve.New(cfg.HooksAddr, internal), httpserve.New(cfg.PanelAddr, panel))
 }

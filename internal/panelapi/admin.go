@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"streamhub/internal/store"
+	"kanalvo/internal/store"
 )
 
 type quotasJSON struct {

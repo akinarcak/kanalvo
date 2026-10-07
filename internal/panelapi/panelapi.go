@@ -20,18 +20,18 @@ import (
 	"strings"
 	"time"
 
-	"streamhub/internal/clientip"
-	"streamhub/internal/passhash"
-	"streamhub/internal/ratelimit"
-	"streamhub/internal/session"
-	"streamhub/internal/store"
+	"kanalvo/internal/clientip"
+	"kanalvo/internal/passhash"
+	"kanalvo/internal/ratelimit"
+	"kanalvo/internal/session"
+	"kanalvo/internal/store"
 )
 
 const (
-	cookieName = "sh_panel"
+	cookieName = "kanalvo_panel"
 	// csrfHeader: tarayıcılar başka siteden gelen bir isteğe özel başlık ekleyemez (CORS izni
 	// verilmediği sürece). Değişiklik yapan her istek bu başlığı taşımak zorundadır.
-	csrfHeader   = "X-StreamHub-Panel"
+	csrfHeader   = "X-Kanalvo-Panel"
 	maxBodyBytes = 64 << 10
 )
 

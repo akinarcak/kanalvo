@@ -1,1 +1,1 @@
-CREATE DATABASE streamhub_test OWNER streamhub;
+CREATE DATABASE kanalvo_test OWNER kanalvo;

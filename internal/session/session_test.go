@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"streamhub/internal/session"
-	"streamhub/internal/srsapi"
-	"streamhub/internal/store"
-	"streamhub/internal/testdb"
+	"kanalvo/internal/session"
+	"kanalvo/internal/srsapi"
+	"kanalvo/internal/store"
+	"kanalvo/internal/testdb"
 )
 
 // fakeSRS, bir SRS'in bağlantı listesini ve kesme isteklerini taklit eder.

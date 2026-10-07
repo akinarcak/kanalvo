@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"streamhub/internal/srsapi"
+	"kanalvo/internal/srsapi"
 )
 
 // clientsBody, SRS 5.0.225'in /api/v1/clients/ yanıtının biçimidir (bkz. docs/srs-findings.md).

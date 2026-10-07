@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"streamhub/internal/enroll"
-	"streamhub/internal/store"
+	"kanalvo/internal/enroll"
+	"kanalvo/internal/store"
 )
 
 // Edge yönetimi yalnızca platform yöneticisine açıktır.

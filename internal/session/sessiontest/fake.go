@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"sync"
 
-	"streamhub/internal/session"
-	"streamhub/internal/store"
+	"kanalvo/internal/session"
+	"kanalvo/internal/store"
 )
 
 // For, her edge için aynı sahte SRS'i veren bir session.New argümanı döner.

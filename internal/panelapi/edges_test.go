@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"streamhub/internal/store"
-	"streamhub/internal/testdb"
+	"kanalvo/internal/store"
+	"kanalvo/internal/testdb"
 )
 
 type edgeJSON struct {

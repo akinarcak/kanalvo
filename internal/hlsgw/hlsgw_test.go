@@ -12,13 +12,13 @@ import (
 	"testing"
 	"time"
 
-	"streamhub/internal/balancer"
-	"streamhub/internal/hlsgw"
-	"streamhub/internal/session"
-	"streamhub/internal/session/sessiontest"
-	"streamhub/internal/store"
-	"streamhub/internal/testdb"
-	"streamhub/internal/token"
+	"kanalvo/internal/balancer"
+	"kanalvo/internal/hlsgw"
+	"kanalvo/internal/session"
+	"kanalvo/internal/session/sessiontest"
+	"kanalvo/internal/store"
+	"kanalvo/internal/testdb"
+	"kanalvo/internal/token"
 )
 
 var now = time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)

@@ -2,11 +2,11 @@
 # sunucu" gibi çalışır. Gerçek kurulumda kullanılmaz.
 services:
   edge-srs:
-    networks: [default, streamhub]
+    networks: [default, kanalvo]
   edge-nginx:
-    networks: [default, streamhub]
+    networks: [default, kanalvo]
 
 networks:
-  streamhub:
+  kanalvo:
     external: true
-    name: streamhub_default
+    name: kanalvo_default

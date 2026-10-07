@@ -10,13 +10,13 @@ import (
 	"testing"
 	"time"
 
-	"streamhub/internal/auth"
-	"streamhub/internal/balancer"
-	"streamhub/internal/play"
-	"streamhub/internal/ratelimit"
-	"streamhub/internal/store"
-	"streamhub/internal/testdb"
-	"streamhub/internal/token"
+	"kanalvo/internal/auth"
+	"kanalvo/internal/balancer"
+	"kanalvo/internal/play"
+	"kanalvo/internal/ratelimit"
+	"kanalvo/internal/store"
+	"kanalvo/internal/testdb"
+	"kanalvo/internal/token"
 )
 
 const (

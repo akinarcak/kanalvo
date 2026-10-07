@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"streamhub/internal/store"
-	"streamhub/internal/testdb"
+	"kanalvo/internal/store"
+	"kanalvo/internal/testdb"
 )
 
 func must[T any](v T, err error) T {

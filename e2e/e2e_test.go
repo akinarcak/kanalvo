@@ -21,7 +21,7 @@ const (
 	apiURL    = "http://localhost:8000" // Xtream uçları ve HLS geçidi
 	tsURL     = "http://localhost:8081" // kesintisiz .ts veren SRS
 	originURL = "http://localhost:8080" // origin SRS'in HTTP portu; dışarıya açık olmamalı
-	pubName   = "sh-e2e-pub"
+	pubName   = "kanalvo-e2e-pub"
 )
 
 type seed struct {
@@ -216,7 +216,7 @@ func firstSegment(playlist string) string {
 
 func TestSingleChannelEndToEnd(t *testing.T) {
 	var s seed
-	if err := json.Unmarshal(compose(t, "exec", "-T", "api", "streamhub", "seed-dev"), &s); err != nil {
+	if err := json.Unmarshal(compose(t, "exec", "-T", "api", "kanalvo", "seed-dev"), &s); err != nil {
 		t.Fatalf("seed-dev çıktısı çözülemedi: %v", err)
 	}
 
@@ -413,7 +413,7 @@ func TestSingleChannelEndToEnd(t *testing.T) {
 		code, _ := probe(t, s.playURL("ts"))
 		return code == http.StatusFound
 	})
-	compose(t, "exec", "-T", "api", "streamhub", "set-tenant-status", fmt.Sprint(s.TenantID), "suspended")
+	compose(t, "exec", "-T", "api", "kanalvo", "set-tenant-status", fmt.Sprint(s.TenantID), "suspended")
 	waitFor(t, "askıdaki yayıncının yayınının kesilmesi", 30*time.Second, func() bool { return !publisherRunning() })
 	for _, ext := range []string{"ts", "m3u8"} {
 		if code, _ := probe(t, s.playURL(ext)); code != http.StatusForbidden {

@@ -1,17 +1,20 @@
+name: kanalvo
+
 services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: streamhub
-      POSTGRES_PASSWORD: streamhub
-      POSTGRES_DB: streamhub
+      POSTGRES_USER: kanalvo
+      POSTGRES_PASSWORD: kanalvo
+      POSTGRES_DB: kanalvo
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
       - "127.0.0.1:5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U streamhub -d streamhub"]
+      # 127.0.0.1: ilk kurulumda veritabanını hazırlayan geçici sunucu ağdan dinlemez; onu "hazır" saymayız.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U kanalvo -d kanalvo"]
       interval: 2s
       timeout: 3s
       retries: 30
@@ -19,7 +22,7 @@ services:
   api:
     build: .
     environment:
-      DATABASE_URL: postgres://streamhub:streamhub@postgres:5432/streamhub?sslmode=disable
+      DATABASE_URL: postgres://kanalvo:kanalvo@postgres:5432/kanalvo?sslmode=disable
       SRS_API_URL: http://srs:1985
       SRS_HLS_URL: http://srs:8080
       SRS_TS_API_URL: http://srs-ts:1985

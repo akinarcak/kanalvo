@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"streamhub/internal/balancer"
-	"streamhub/internal/store"
-	"streamhub/internal/testdb"
+	"kanalvo/internal/balancer"
+	"kanalvo/internal/store"
+	"kanalvo/internal/testdb"
 )
 
 const edgeKey = "key-e1"

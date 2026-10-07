@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"streamhub/internal/store"
-	"streamhub/internal/testdb"
+	"kanalvo/internal/store"
+	"kanalvo/internal/testdb"
 )
 
 const idle = 30 * time.Second

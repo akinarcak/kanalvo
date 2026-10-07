@@ -8,7 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"streamhub/internal/store"
+	"kanalvo/internal/store"
 )
 
 // Exec, testlerin veritabanı durumunu doğrudan hazırlaması içindir (ör. bir kaydı geçmişe çekmek).
@@ -54,7 +54,7 @@ func LocalEdge(t *testing.T) int64 {
 	return int64(Count(t, `SELECT id FROM edges WHERE builtin`))
 }
 
-const defaultURL = "postgres://streamhub:streamhub@localhost:5432/streamhub_test?sslmode=disable"
+const defaultURL = "postgres://kanalvo:kanalvo@localhost:5432/kanalvo_test?sslmode=disable"
 
 func New(t *testing.T) *store.Store {
 	t.Helper()

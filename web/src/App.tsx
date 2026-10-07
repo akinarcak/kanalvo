@@ -82,7 +82,7 @@ function Login({ onLogin }: { onLogin: (a: Account) => void }) {
   const action = useAction();
 
   useEffect(() => {
-    document.title = "Giriş · StreamHub";
+    document.title = "Giriş · Kanalvo";
   }, []);
 
   const submit = (e: FormEvent) => {
@@ -98,7 +98,7 @@ function Login({ onLogin }: { onLogin: (a: Account) => void }) {
         <div className="login-brand">
           <Logo size={44} />
           <div>
-            <h1>StreamHub</h1>
+            <h1>Kanalvo</h1>
             <p className="muted">Yönetim paneline giriş yapın.</p>
           </div>
         </div>
@@ -130,7 +130,7 @@ function Shell({ account, onLogout }: { account: Account; onLogout: () => void }
   const title = current?.title ?? "Şifre değiştir";
 
   useEffect(() => {
-    document.title = `${title} · StreamHub`;
+    document.title = `${title} · Kanalvo`;
   }, [title]);
 
   // Çıkış isteği başarısız olsa da (ör. oturum zaten kapanmış) giriş ekranına dönülür.
@@ -146,7 +146,7 @@ function Shell({ account, onLogout }: { account: Account; onLogout: () => void }
       <nav className="sidebar" aria-label="Ana menü">
         <div className="brand">
           <Logo />
-          StreamHub
+          Kanalvo
         </div>
         <ul>
           {pages.map((p) => (

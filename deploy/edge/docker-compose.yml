@@ -10,7 +10,7 @@
 #
 # Dışarıya yalnızca nginx'in portu açılır. Edge'de veritabanı ya da imza anahtarı yoktur; her
 # izleme isteğini ana sunucu yetkilendirir.
-name: streamhub-edge
+name: kanalvo-edge
 
 services:
   edge-srs:

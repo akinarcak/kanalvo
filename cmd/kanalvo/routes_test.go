@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"streamhub/internal/balancer"
-	"streamhub/internal/config"
-	"streamhub/internal/hooks"
-	"streamhub/internal/session"
-	"streamhub/internal/session/sessiontest"
-	"streamhub/internal/testdb"
-	"streamhub/internal/token"
+	"kanalvo/internal/balancer"
+	"kanalvo/internal/config"
+	"kanalvo/internal/hooks"
+	"kanalvo/internal/session"
+	"kanalvo/internal/session/sessiontest"
+	"kanalvo/internal/testdb"
+	"kanalvo/internal/token"
 )
 
 // İzleyicilere açık tüm uçlar tek bir yönlendiricide birlikte kaydedilir. Bu test, kısa yayın

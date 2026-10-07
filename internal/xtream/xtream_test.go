@@ -11,13 +11,13 @@ import (
 	"testing"
 	"time"
 
-	"streamhub/internal/auth"
-	"streamhub/internal/ratelimit"
-	"streamhub/internal/session"
-	"streamhub/internal/session/sessiontest"
-	"streamhub/internal/store"
-	"streamhub/internal/testdb"
-	"streamhub/internal/xtream"
+	"kanalvo/internal/auth"
+	"kanalvo/internal/ratelimit"
+	"kanalvo/internal/session"
+	"kanalvo/internal/session/sessiontest"
+	"kanalvo/internal/store"
+	"kanalvo/internal/testdb"
+	"kanalvo/internal/xtream"
 )
 
 const maxFailures = 5

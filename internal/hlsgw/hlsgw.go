@@ -21,11 +21,11 @@ import (
 	"strings"
 	"time"
 
-	"streamhub/internal/balancer"
-	"streamhub/internal/clientip"
-	"streamhub/internal/session"
-	"streamhub/internal/store"
-	"streamhub/internal/token"
+	"kanalvo/internal/balancer"
+	"kanalvo/internal/clientip"
+	"kanalvo/internal/session"
+	"kanalvo/internal/store"
+	"kanalvo/internal/token"
 )
 
 // filePattern: "<kanal>.m3u8" veya "<kanal>-<sıra>.ts".

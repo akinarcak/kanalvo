@@ -1,8 +1,8 @@
-# StreamHub
+# Kanalvo
 
 OBS ile yayın açılan, Xtream uyumlu oynatıcılardan izlenen çok kiracılı canlı yayın platformu.
 
-- Tasarım: `docs/superpowers/specs/2026-10-05-streamhub-design.md`
+- Tasarım: `docs/superpowers/specs/2026-10-05-kanalvo-design.md`
 - SRS'in ölçülen davranışları: `docs/srs-findings.md`
 
 ## Ekran görüntüleri
@@ -55,13 +55,13 @@ HLS izleyiciye yalnızca `api` içindeki `/hls/<imza>/…` geçidinden verilir.
 Panel `http://localhost:8002` adresinde açılır. İlk yöneticiyi komutla oluşturun; şifresi yalnızca bir kez yazılır:
 
 ```bash
-docker compose exec -T api streamhub create-admin siz@ornek.com
+docker compose exec -T api kanalvo create-admin siz@ornek.com
 ```
 
 Yönetici şifresini unutursanız aynı yolla yenisini alırsınız; açık oturumları kapanır:
 
 ```bash
-docker compose exec -T api streamhub reset-admin-password siz@ornek.com
+docker compose exec -T api kanalvo reset-admin-password siz@ornek.com
 ```
 
 - **Yönetici** yayıncı ekler, kotalarını belirler, askıya alır ve panel şifresini sıfırlar; izleyicilerin
@@ -87,7 +87,7 @@ Docker ve Docker Compose v2 gerekir.
 ```bash
 cp .env.example .env
 docker compose up -d --build --wait
-docker compose exec -T api streamhub seed-dev
+docker compose exec -T api kanalvo seed-dev
 ```
 
 `seed-dev` bir deneme yayıncısı, kanalı ve izleyicisi oluşturur ve değerlerini yazar:
@@ -115,7 +115,7 @@ yeni bir sunucu eklemek için:
    ```
 
 2. Komutu yeni sunucuda (Linux) çalıştırın. Betik Docker yoksa kurar, dosyaları
-   `/opt/streamhub-edge` altına yazar, sunucuyu ana sunucuya kaydeder ve servisleri başlatır.
+   `/opt/kanalvo-edge` altına yazar, sunucuyu ana sunucuya kaydeder ve servisleri başlatır.
    İzleyicilere 80 numaralı port açılır; başka bir port için komutun sonunu
    `| sudo EDGE_PORT=8080 sh` yapın.
 3. Panel sunucunun bağlandığını kendiliğinden görür ve adını, izleyici adresini sorar. Adres,
@@ -126,7 +126,7 @@ yeni bir sunucu eklemek için:
 |---|---|
 | ![Kurulum komutu](docs/ekran-goruntuleri/yonetici-sunucu-ekle-komut.png) | ![Bilgilerin onayı](docs/ekran-goruntuleri/yonetici-sunucu-ekle-onay.png) |
 
-Sunucuyu kaldırmak için orada `sudo sh /opt/streamhub-edge/kaldir.sh` çalıştırın ve paneldeki kaydı
+Sunucuyu kaldırmak için orada `sudo sh /opt/kanalvo-edge/kaldir.sh` çalıştırın ve paneldeki kaydı
 silin. Kurulumu elle yapmak isterseniz (ör. betik çalıştıramadığınız bir ortamda) aynı sayfadaki
 "Elle ekle" bölümü sunucuyu kaydeder ve `deploy/edge` klasöründeki dosyalarla birlikte `.env`
 dosyasına yazılacak satırları verir.
@@ -166,7 +166,7 @@ Bilinmesi gerekenler:
 - Bir yayıncıyı askıya almak için:
 
   ```bash
-  docker compose exec -T api streamhub set-tenant-status <tenant_id> suspended
+  docker compose exec -T api kanalvo set-tenant-status <tenant_id> suspended
   ```
 
   Süren yayınları ve izleyicilerinin bağlantıları birkaç saniye içinde kesilir. Geri almak için

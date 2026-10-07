@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"time"
 
-	"streamhub/internal/store"
+	"kanalvo/internal/store"
 )
 
 // maxStreams, SRS'ten tek istekte istenen yayın sayısıdır; SRS varsayılan olarak yalnızca 10 döner.

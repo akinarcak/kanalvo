@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"streamhub/internal/store"
-	"streamhub/internal/testdb"
-	"streamhub/internal/token"
+	"kanalvo/internal/store"
+	"kanalvo/internal/testdb"
+	"kanalvo/internal/token"
 )
 
 func (f *fixture) addEdge(name, pullIP string) int64 {

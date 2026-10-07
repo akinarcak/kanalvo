@@ -19,9 +19,9 @@ import (
 	"strings"
 	"text/template"
 
-	edgefiles "streamhub/deploy/edge"
-	"streamhub/internal/clientip"
-	"streamhub/internal/store"
+	edgefiles "kanalvo/deploy/edge"
+	"kanalvo/internal/clientip"
+	"kanalvo/internal/store"
 )
 
 //go:embed install.sh.tmpl

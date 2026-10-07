@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"streamhub/internal/passhash"
-	"streamhub/internal/store"
-	"streamhub/internal/testdb"
+	"kanalvo/internal/passhash"
+	"kanalvo/internal/store"
+	"kanalvo/internal/testdb"
 )
 
 // Şifresini unutan yönetici komutla yeni şifre alır: eski şifre ve açık panel oturumları geçersiz olur.

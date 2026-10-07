@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"streamhub/internal/auth"
-	"streamhub/internal/store"
+	"kanalvo/internal/auth"
+	"kanalvo/internal/store"
 )
 
 // Kategorisi olmayan kanallar bu sanal kategoride gösterilir; birçok oynatıcı kategorisiz
@@ -275,7 +275,7 @@ func (h *Handler) guide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
-	fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?>`+"\n"+`<tv generator-info-name="StreamHub"></tv>`+"\n")
+	fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?>`+"\n"+`<tv generator-info-name="Kanalvo"></tv>`+"\n")
 }
 
 // usableViewer, girişi doğrular ve izleyici kullanılamıyorsa yanıtı kendisi yazar.

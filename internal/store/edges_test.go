@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"streamhub/internal/store"
-	"streamhub/internal/testdb"
+	"kanalvo/internal/store"
+	"kanalvo/internal/testdb"
 )
 
 const healthWindow = 15 * time.Second

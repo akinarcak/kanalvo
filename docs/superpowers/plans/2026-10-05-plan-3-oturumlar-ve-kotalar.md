@@ -1,4 +1,4 @@
-# StreamHub Plan 3 — Oturumlar, Bağlantı Limiti ve Kotalar
+# Kanalvo Plan 3 — Oturumlar, Bağlantı Limiti ve Kotalar
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
 
@@ -8,7 +8,7 @@
 
 **Tech Stack:** Plan 1 ve 2 ile aynı.
 
-**Spec:** `docs/superpowers/specs/2026-10-05-streamhub-design.md` (bölüm 4, 5, 6, 7)
+**Spec:** `docs/superpowers/specs/2026-10-05-kanalvo-design.md` (bölüm 4, 5, 6, 7)
 
 ## Global Constraints
 
@@ -52,7 +52,7 @@
 | `internal/clientip/clientip.go` | İstemci anahtarı (hatalı giriş sınırı ve HLS oturumları ortak kullanır) |
 | `internal/token/token.go` | HLS imzasında oturum anahtarı |
 | `internal/hooks`, `internal/hlsgw`, `internal/play`, `internal/xtream` | Oturumların uçlara bağlanması; `active_cons` |
-| `cmd/streamhub/main.go` | Bağlama; `set-tenant-status` komutu |
+| `cmd/kanalvo/main.go` | Bağlama; `set-tenant-status` komutu |
 
 ## Görevler
 

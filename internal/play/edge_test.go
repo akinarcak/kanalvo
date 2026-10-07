@@ -7,8 +7,8 @@ import (
 	"net/url"
 	"testing"
 
-	"streamhub/internal/store"
-	"streamhub/internal/testdb"
+	"kanalvo/internal/store"
+	"kanalvo/internal/testdb"
 )
 
 func (f *fixture) addEdge(name string, weight int) int64 {

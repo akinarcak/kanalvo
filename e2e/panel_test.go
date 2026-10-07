@@ -46,7 +46,7 @@ func (c *panelClient) call(method, path string, body, out any, want int) {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if method != http.MethodGet {
-		req.Header.Set("X-StreamHub-Panel", "1")
+		req.Header.Set("X-Kanalvo-Panel", "1")
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -82,7 +82,7 @@ func TestPanelCreatedChannelCanBeStreamedAndWatched(t *testing.T) {
 
 	stamp := time.Now().UnixNano()
 	var created struct{ Email, Password string }
-	if err := json.Unmarshal(compose(t, "exec", "-T", "api", "streamhub", "create-admin", fmt.Sprintf("yonetici-%d@example.com", stamp)), &created); err != nil {
+	if err := json.Unmarshal(compose(t, "exec", "-T", "api", "kanalvo", "create-admin", fmt.Sprintf("yonetici-%d@example.com", stamp)), &created); err != nil {
 		t.Fatalf("create-admin çıktısı çözülemedi: %v", err)
 	}
 
@@ -116,7 +116,7 @@ func TestPanelCreatedChannelCanBeStreamedAndWatched(t *testing.T) {
 	if channel.IngestURL != "rtmp://localhost/live" {
 		t.Fatalf("beklenmeyen yayın sunucusu: %s", channel.IngestURL)
 	}
-	const publisher = "sh-e2e-panel-pub"
+	const publisher = "kanalvo-e2e-panel-pub"
 	compose(t, "--profile", "e2e", "run", "-d", "--rm", "--name", publisher, "ffmpeg",
 		"-re", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=25", "-f", "lavfi", "-i", "sine=frequency=440",
 		"-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-g", "50", "-pix_fmt", "yuv420p",

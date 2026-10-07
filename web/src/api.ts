@@ -1,8 +1,8 @@
-// Panel API istemcisi. Değişiklik yapan her istek X-StreamHub-Panel başlığını taşır; sunucu
+// Panel API istemcisi. Değişiklik yapan her istek X-Kanalvo-Panel başlığını taşır; sunucu
 // bu başlık olmadan değişikliği reddeder (başka sitelerden gelen isteklere karşı).
 
 // Sunucu oturumu artık tanımıyorsa bu olay yayılır; uygulama giriş ekranına döner.
-export const sessionEndedEvent = "streamhub:session-ended";
+export const sessionEndedEvent = "kanalvo:session-ended";
 
 export class ApiError extends Error {
   constructor(
@@ -26,7 +26,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 async function requestWithTotal<T>(method: string, path: string, body?: unknown): Promise<{ data: T; total: number }> {
   const headers: Record<string, string> = {};
-  if (method !== "GET") headers["X-StreamHub-Panel"] = "1";
+  if (method !== "GET") headers["X-Kanalvo-Panel"] = "1";
   if (body !== undefined) headers["Content-Type"] = "application/json";
 
   let res: Response;

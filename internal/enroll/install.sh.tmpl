@@ -1,21 +1,21 @@
 #!/bin/sh
-# StreamHub uzak sunucu kurulumu.
+# Kanalvo uzak sunucu kurulumu.
 #
 # Docker yoksa kurar, kurulum dosyalarını yazar, sunucuyu ana sunucuya kaydeder ve başlatır.
 # Kurulum kodu tek kullanımlıktır: betik yeniden çalıştırılacaksa panelden yeni kod alınır.
 #
 #   EDGE_PORT            izleyicilere açılacak port (varsayılan 80)
-#   STREAMHUB_EDGE_DIR   kurulum klasörü (varsayılan /opt/streamhub-edge)
+#   KANALVO_EDGE_DIR   kurulum klasörü (varsayılan /opt/kanalvo-edge)
 set -eu
 
 CONTROL_URL={{.ControlURL}}
 TOKEN={{.Token}}
-DIR="${STREAMHUB_EDGE_DIR:-/opt/streamhub-edge}"
+DIR="${KANALVO_EDGE_DIR:-/opt/kanalvo-edge}"
 PORT="${EDGE_PORT:-80}"
 
-say() { printf 'streamhub: %s\n' "$*"; }
+say() { printf 'kanalvo: %s\n' "$*"; }
 die() {
-  printf 'streamhub: HATA: %s\n' "$*" >&2
+  printf 'kanalvo: HATA: %s\n' "$*" >&2
   exit 1
 }
 
@@ -35,29 +35,29 @@ say "Dosyalar $DIR klasörüne yazılıyor…"
 mkdir -p "$DIR"
 cd "$DIR"
 
-cat > docker-compose.yml <<'STREAMHUB_EOF'
+cat > docker-compose.yml <<'KANALVO_EOF'
 {{.Compose}}
-STREAMHUB_EOF
+KANALVO_EOF
 
-cat > nginx.conf.template <<'STREAMHUB_EOF'
+cat > nginx.conf.template <<'KANALVO_EOF'
 {{.Nginx}}
-STREAMHUB_EOF
+KANALVO_EOF
 
-cat > srs-edge.conf.tmpl <<'STREAMHUB_EOF'
+cat > srs-edge.conf.tmpl <<'KANALVO_EOF'
 {{.SRS}}
-STREAMHUB_EOF
+KANALVO_EOF
 
-cat > kaldir.sh <<'STREAMHUB_EOF'
+cat > kaldir.sh <<'KANALVO_EOF'
 #!/bin/sh
-# Bu sunucudaki StreamHub kurulumunu durdurur ve klasörünü siler. Paneldeki kaydı ayrıca silin.
+# Bu sunucudaki Kanalvo kurulumunu durdurur ve klasörünü siler. Paneldeki kaydı ayrıca silin.
 set -eu
 dir=$(cd "$(dirname "$0")" && pwd)
 cd "$dir"
 docker compose down -v
 cd /
 rm -rf "$dir"
-echo "streamhub: kaldırıldı."
-STREAMHUB_EOF
+echo "kanalvo: kaldırıldı."
+KANALVO_EOF
 chmod +x kaldir.sh
 
 say "Sunucu ana sunucuya kaydediliyor…"

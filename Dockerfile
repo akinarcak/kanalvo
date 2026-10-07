@@ -12,12 +12,12 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=web /src/internal/panelui/dist ./internal/panelui/dist
-RUN CGO_ENABLED=0 go build -o /out/streamhub ./cmd/streamhub
+RUN CGO_ENABLED=0 go build -o /out/kanalvo ./cmd/kanalvo
 
 FROM alpine:3.22
-RUN adduser -D -u 10001 streamhub
-USER streamhub
-COPY --from=build /out/streamhub /usr/local/bin/streamhub
+RUN adduser -D -u 10001 kanalvo
+USER kanalvo
+COPY --from=build /out/kanalvo /usr/local/bin/kanalvo
 EXPOSE 8000 8002
-ENTRYPOINT ["streamhub"]
+ENTRYPOINT ["kanalvo"]
 CMD ["serve"]

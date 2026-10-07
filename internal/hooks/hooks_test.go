@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"streamhub/internal/balancer"
-	"streamhub/internal/hooks"
-	"streamhub/internal/session"
-	"streamhub/internal/session/sessiontest"
-	"streamhub/internal/store"
-	"streamhub/internal/testdb"
-	"streamhub/internal/token"
+	"kanalvo/internal/balancer"
+	"kanalvo/internal/hooks"
+	"kanalvo/internal/session"
+	"kanalvo/internal/session/sessiontest"
+	"kanalvo/internal/store"
+	"kanalvo/internal/testdb"
+	"kanalvo/internal/token"
 )
 
 const hookSecret = "hook-secret-0123456789"

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"streamhub/internal/clientip"
-	"streamhub/internal/ratelimit"
-	"streamhub/internal/store"
+	"kanalvo/internal/clientip"
+	"kanalvo/internal/ratelimit"
+	"kanalvo/internal/store"
 )
 
 var (
