@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"streamhub/internal/store"
 )
@@ -299,7 +300,7 @@ func (h *Handler) listViewers(w http.ResponseWriter, r *http.Request, a actor) {
 		return
 	}
 	search := strings.TrimSpace(r.URL.Query().Get("q"))
-	if len(search) > maxSearchLength {
+	if utf8.RuneCountInString(search) > maxSearchLength {
 		fail(w, http.StatusBadRequest, "invalid", "Arama metni en çok 64 karakter olabilir.")
 		return
 	}

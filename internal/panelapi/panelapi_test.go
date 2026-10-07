@@ -865,6 +865,8 @@ func TestViewerListIsPagedAndSearchable(t *testing.T) {
 		"?q=_":              {"a_b", "1"}, // arama metni kalıp değildir
 		"?q=%25":            {"", "0"},
 		"?q=yok":            {"", "0"},
+		// Sınır karakter sayısıdır: 64 Türkçe harf kabul edilir.
+		"?q=" + strings.Repeat("%C5%9F", 64): {"", "0"},
 	} {
 		names, total := usernames(t, tenant.want(tenant.get("/api/tenant/viewers"+query), http.StatusOK))
 		if names != want[0] || total != want[1] {

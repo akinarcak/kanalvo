@@ -1,19 +1,25 @@
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { ApiError } from "./api";
 
-// useLoad, bir API çağrısının sonucunu tutar. refreshMs verilirse sonucu o aralıkla yeniler.
-export function useLoad<T>(load: () => Promise<T>, refreshMs?: number) {
+// useLoad, bir API çağrısının sonucunu tutar. refreshMs verilirse sonucu o aralıkla yeniler;
+// deps'teki bir değer (ör. arama metni, sayfa) değişince yeniden yükler. Yanıtlar sırasız
+// gelebilir: yalnızca en son başlatılan isteğin sonucu gösterilir.
+export function useLoad<T>(load: () => Promise<T>, refreshMs?: number, deps: readonly unknown[] = []) {
   const [data, setData] = useState<T | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const loader = useRef(load);
   loader.current = load;
+  const latest = useRef(0);
 
   const reload = useCallback(async () => {
+    const mine = ++latest.current;
     try {
-      setData(await loader.current());
+      const result = await loader.current();
+      if (mine !== latest.current) return;
+      setData(result);
       setError(null);
     } catch (e) {
-      setError(messageOf(e));
+      if (mine === latest.current) setError(messageOf(e));
     }
   }, []);
 
@@ -22,7 +28,7 @@ export function useLoad<T>(load: () => Promise<T>, refreshMs?: number) {
     if (!refreshMs) return;
     const timer = window.setInterval(() => void reload(), refreshMs);
     return () => window.clearInterval(timer);
-  }, [reload, refreshMs]);
+  }, [reload, refreshMs, ...deps]);
 
   return { data, error, reload };
 }

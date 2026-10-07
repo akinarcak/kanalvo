@@ -253,10 +253,15 @@ func newAdminPassword(ctx context.Context, st *store.Store, email string) (strin
 	if err != nil {
 		return "", err
 	}
+	// Önce oturumlar kapanır: sonraki adım başarısız olursa şifre değişmemiş olur ve komut yeniden
+	// çalıştırılabilir; tersi sırada yeni şifre yazılmadan kaybolurdu.
+	if err := st.DeletePanelSessionsOf(ctx, "admin", admin.ID, nil); err != nil {
+		return "", err
+	}
 	if err := st.SetAdminPassword(ctx, admin.ID, hash); err != nil {
 		return "", err
 	}
-	return password, st.DeletePanelSessionsOf(ctx, "admin", admin.ID, nil)
+	return password, nil
 }
 
 // setTenantStatus, bir yayıncıyı askıya alır veya yeniden etkinleştirir. Askıya alınan yayıncının
@@ -277,7 +282,8 @@ func setTenantStatus(ctx context.Context, args []string) error {
 	if _, err := st.TenantQuotas(ctx, id); err != nil {
 		return fmt.Errorf("yayıncı %d: %w", id, err)
 	}
-	return st.SetTenantStatus(ctx, id, args[1])
+	// Panelle aynı yol: askıya alınan yayıncının panel oturumları da kapanır.
+	return st.UpdateTenant(ctx, id, store.TenantUpdate{Status: &args[1]})
 }
 
 func openStore(ctx context.Context, url string) (*store.Store, error) {

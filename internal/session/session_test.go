@@ -24,6 +24,8 @@ type fakeSRS struct {
 	kicked  []string
 	// hang: istekler yanıt vermez, bağlamın süresi dolana kadar bekler.
 	hang bool
+	// kickDelay: her kesme isteği bu kadar sürer (yavaş ama yanıt veren SRS).
+	kickDelay time.Duration
 }
 
 func (f *fakeSRS) wait(ctx context.Context) error {
@@ -49,7 +51,15 @@ func (f *fakeSRS) ClientIDs(ctx context.Context) ([]string, error) {
 func (f *fakeSRS) Kick(ctx context.Context, id string) error {
 	f.mu.Lock()
 	f.kicked = append(f.kicked, id)
+	delay := f.kickDelay
 	f.mu.Unlock()
+	if delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	if err := f.wait(ctx); err != nil {
 		return err
 	}
@@ -210,6 +220,7 @@ func TestEnforceStepsAreIndependent(t *testing.T) {
 		ok(t, f.m.OpenTS(ctx, f.local, v, theirChannel, fmt.Sprintf("izleyici-%d", i), "1.1.1.1"))
 	}
 	ok(t, f.s.SetTenantStatus(ctx, other, "suspended"))
+	ok(t, f.s.MarkEdgeSeen(ctx, f.local)) // kısa bir kesinti: oturum kayıtları korunur
 
 	f.ts.kickErr = errors.New("SRS yanıt vermiyor")
 	f.ts.listErr = errors.New("SRS yanıt vermiyor")
@@ -219,7 +230,17 @@ func TestEnforceStepsAreIndependent(t *testing.T) {
 	if f.origin.got() != "[yayinci-1]" {
 		t.Fatalf("origin adımı .ts dağıtıcısındaki hatadan etkilenmemeli: %s", f.origin.got())
 	}
-	// Yanıt vermeyen bir SRS'e aynı geçişte tekrar tekrar gidilmez.
+	// Bağlantı listesini veremeyen bir SRS'e aynı geçişte kesme isteği gönderilmez.
+	if f.ts.got() != "[]" {
+		t.Fatalf("yanıt vermeyen SRS'e kesme isteği gitmemeli: %s", f.ts.got())
+	}
+
+	// Liste alınıyor ama kesmeler başarısızsa ilk hatadan sonra o SRS için denemeler durur.
+	f.ts.listErr = nil
+	f.ts.clients = []string{"izleyici-0", "izleyici-1", "izleyici-2"}
+	if err := f.m.EnforceOnce(ctx); err == nil {
+		t.Fatal("hata bildirilmeliydi")
+	}
 	if f.ts.got() != "[izleyici-0]" {
 		t.Fatalf("ilk hatadan sonra o SRS için kesme denemeleri durmalı: %s", f.ts.got())
 	}
@@ -490,5 +511,36 @@ func TestFailureKeyIgnoresEphemeralPorts(t *testing.T) {
 	}
 	if session.FailureKey(nil) != "" {
 		t.Fatal("hata yokken anahtar boş olmalı")
+	}
+}
+
+// Kesilecek çok bağlantısı olan bir edge sağlıklıdır: kesmeler bir geçişe sığmasa da sağlık sinyali
+// kaydedilir, edge yönlendirmeden çıkmaz ve kalan kesmeler sonraki geçişlerde sürer.
+func TestKickBacklogDoesNotCostAnEdgeItsHealth(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	session.SetEdgeTimeout(t, 300*time.Millisecond)
+	remote, remoteSRS := f.addEdge("e1")
+	crowd := must(f.s.CreateViewer(ctx, f.tenant, "veli", "pw", 5))
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("uzak-%d", i)
+		ok(t, f.m.OpenTS(ctx, remote, crowd, f.channel, id, "1.1.1.1"))
+		remoteSRS.clients = append(remoteSRS.clients, id)
+	}
+	ok(t, f.s.SetViewerStatus(ctx, crowd, "suspended"))
+	remoteSRS.kickDelay = 200 * time.Millisecond
+
+	_ = f.m.EnforceOnce(ctx) // bütçe hepsini kesmeye yetmez
+	if !f.healthy(remote) {
+		t.Fatal("yanıt veren edge, kesmeleri bitmedi diye sağlıksız sayıldı")
+	}
+	if n := testdb.Count(t, `SELECT count(*) FROM sessions WHERE edge_id = $1`, remote); n != 5 {
+		t.Fatalf("kesilemeyen bağlantıların kayıtları kalmalıydı: %d", n)
+	}
+	// Edge ulaşılamaz sayılmadığı için panel işlemleri onu atlamaz.
+	before := remoteSRS.got()
+	f.m.Flush(ctx)
+	if remoteSRS.got() == before {
+		t.Fatal("yanıt veren edge istek sırasındaki kesmelerde atlandı")
 	}
 }

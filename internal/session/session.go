@@ -34,7 +34,7 @@ const (
 	deadEdgeAfter = 2 * time.Minute
 )
 
-// edgeTimeout, bir geçişte tek bir edge'e (kesmeler ve bağlantı listesi) ayrılan en uzun süredir.
+// edgeTimeout, bir geçişte tek bir SRS'e (bağlantı listesi ve kesmeler) ayrılan en uzun süredir.
 // Denetim aralığından kısadır: yanıt vermeyen bir edge diğerlerinin sağlık sinyalini geciktirmez.
 var edgeTimeout = 4 * time.Second
 
@@ -196,7 +196,7 @@ func (m *Manager) EnforceOnce(ctx context.Context) error {
 }
 
 // pass, origin'i ve her edge'i birbirinden bağımsız denetler: biri yanıt vermese de diğerlerinin
-// işi gecikmez ve geçiş edgeTimeout'tan uzun sürmez. reconcile kapalıysa yalnızca kesmeler yapılır
+// işi gecikmez ve geçişin SRS'lerle geçen kısmı edgeTimeout'tan uzun sürmez. reconcile kapalıysa yalnızca kesmeler yapılır
 // ve ulaşılamadığı bilinen edge'ler atlanır.
 func (m *Manager) pass(ctx context.Context, reconcile bool) error {
 	edges, listErr := m.store.Edges(ctx, 0)
@@ -207,6 +207,8 @@ func (m *Manager) pass(ctx context.Context, reconcile bool) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		ctx, cancel := context.WithTimeout(ctx, edgeTimeout)
+		defer cancel()
 		errs[len(edges)] = errors.Join(
 			m.kickAll(ctx, m.origin, m.store.PendingOriginKicks, func(id string) error { return m.store.ResolveOriginKick(ctx, id) }),
 			m.kickAll(ctx, m.origin, m.store.SuspendedLivePublishers, nil),
@@ -219,8 +221,6 @@ func (m *Manager) pass(ctx context.Context, reconcile bool) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ctx, cancel := context.WithTimeout(ctx, edgeTimeout)
-			defer cancel()
 			if err := m.enforceEdge(ctx, e, reconcile); err != nil {
 				errs[i] = fmt.Errorf("edge %q: %w", e.Name, err)
 			}
@@ -230,19 +230,40 @@ func (m *Manager) pass(ctx context.Context, reconcile bool) error {
 	return errors.Join(errs...)
 }
 
+// enforceEdge, bir edge'e edgeTimeout kadar süre ayırır. Önce bağlantı listesi alınır: bu, edge'in
+// sağlık sinyalidir ve kesmelerin ne kadar sürdüğünden etkilenmemelidir. Liste alınamazsa aynı
+// geçişte kesme denenmez. Süreye sığmayan kesmeler sonraki geçişe kalır.
 func (m *Manager) enforceEdge(ctx context.Context, e store.Edge, reconcile bool) error {
 	srs := m.srsFor(e)
+	srsCtx, cancel := context.WithTimeout(ctx, edgeTimeout)
+	defer cancel()
+
+	var clients []string
+	if reconcile {
+		var err error
+		clients, err = srs.ClientIDs(srsCtx)
+		m.setDown(e.ID, err != nil)
+		if err != nil {
+			return err
+		}
+		if err := m.store.MarkEdgeSeen(ctx, e.ID); err != nil {
+			return err
+		}
+	}
+
 	pending := func(ctx context.Context) ([]string, error) { return m.store.PendingEdgeKicks(ctx, e.ID) }
 	resolve := func(id string) error { return m.store.ResolveEdgeKick(ctx, e.ID, id) }
 	unentitled := func(ctx context.Context) ([]string, error) { return m.store.TSSessionsToKick(ctx, e.ID) }
 	err := errors.Join(
-		m.kickAll(ctx, srs, pending, resolve),
-		m.kickAll(ctx, srs, unentitled, nil),
+		m.kickAll(srsCtx, srs, pending, resolve),
+		m.kickAll(srsCtx, srs, unentitled, nil),
 	)
 	if !reconcile {
 		return err
 	}
-	return errors.Join(err, m.reconcile(ctx, e, srs))
+	// Liste kesmelerden önce alındı: az önce kesilen bağlantıların kayıtları bir sonraki geçişte silinir.
+	_, recErr := m.store.ReconcileTSSessions(ctx, e.ID, clients, reconcileGrace)
+	return errors.Join(err, recErr)
 }
 
 // kickAll, listedeki bağlantıları keser. SRS'in reddettiği bir kesme (bağlantı zaten kopmuş)
@@ -271,21 +292,6 @@ func (m *Manager) kickAll(ctx context.Context, srs SRS, list func(context.Contex
 		}
 	}
 	return errors.Join(errs...)
-}
-
-// reconcile, edge'in SRS'ine ulaşılamazsa hiçbir oturuma dokunmadan hata döner. Bağlantı listesinin
-// alınabilmesi edge'in sağlık sinyalidir.
-func (m *Manager) reconcile(ctx context.Context, e store.Edge, srs SRS) error {
-	ids, err := srs.ClientIDs(ctx)
-	m.setDown(e.ID, err != nil)
-	if err != nil {
-		return err
-	}
-	if err := m.store.MarkEdgeSeen(ctx, e.ID); err != nil {
-		return err
-	}
-	_, err = m.store.ReconcileTSSessions(ctx, e.ID, ids, reconcileGrace)
-	return err
 }
 
 func (m *Manager) expire(ctx context.Context) error {

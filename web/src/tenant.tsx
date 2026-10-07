@@ -292,9 +292,11 @@ function ObsSettings({ channel, onClose, onChanged }: { channel: Channel; onClos
 
 export function Viewers() {
   // Liste dilim dilim gelir (en yeni önce); arama kullanıcı adında yapılır.
+  // search kutudaki metindir; query, yazma durunca sunucuya gönderilen halidir.
   const [search, setSearch] = useState("");
+  const [query, setQuery] = useState("");
   const [offset, setOffset] = useState(0);
-  const viewers = useLoad(() => api.page<Viewer>("/api/tenant/viewers", { q: search.trim(), limit: pageSize, offset }));
+  const viewers = useLoad(() => api.page<Viewer>("/api/tenant/viewers", { q: query, limit: pageSize, offset }), undefined, [query, offset]);
   const overview = useLoad(() => api.get<Overview>("/api/tenant/overview"));
   const [opened, setOpened] = useState<{ id: number; mode: "info" | "edit" } | null>(null);
   const action = useAction();
@@ -302,9 +304,12 @@ export function Viewers() {
   const reload = () => void viewers.reload();
   useEffect(() => {
     // Yazarken her tuşta istek gitmesin diye kısa bir bekleme.
-    const timer = window.setTimeout(() => void viewers.reload(), 250);
+    const timer = window.setTimeout(() => setQuery(search.trim()), 250);
     return () => window.clearTimeout(timer);
-  }, [search, offset]);
+  }, [search]);
+  // Liste değişince (arama, sayfa) açık bilgi ya da düzenleme paneli kapanır; aksi halde
+  // görünmeyen bir izleyicinin paneli kaybolup geri gelirdi.
+  const showPage = (next: number) => (setOpened(null), setOffset(next));
   // Silme sonrası boşalan son sayfada kalınmaz.
   useEffect(() => {
     if (viewers.data && viewers.data.items.length === 0 && offset > 0) setOffset(Math.max(0, offset - pageSize));
@@ -334,6 +339,7 @@ export function Viewers() {
           // Yeni izleyici listenin başındadır; görünmesi için arama ve sayfa sıfırlanır.
           setOpened({ id: v.id, mode: "info" });
           setSearch("");
+          setQuery("");
           setOffset(0);
           reload();
         }}
@@ -341,6 +347,7 @@ export function Viewers() {
 
       <Panel title="İzleyiciler">
         <ErrorNote message={action.error} />
+        <ErrorNote message={viewers.data ? viewers.error : null} />
         <div className="list-search">
           <input
             type="search"
@@ -348,7 +355,7 @@ export function Viewers() {
             aria-label="Kullanıcı adında ara"
             value={search}
             maxLength={64}
-            onChange={(e) => (setSearch(e.target.value), setOffset(0))}
+            onChange={(e) => (setSearch(e.target.value), showPage(0))}
           />
         </div>
         {!viewers.data ? (
@@ -407,7 +414,7 @@ export function Viewers() {
             </table>
           </div>
         )}
-        {viewers.data && <Pager offset={offset} shown={viewers.data.items.length} total={viewers.data.total} onMove={setOffset} />}
+        {viewers.data && <Pager offset={offset} shown={viewers.data.items.length} total={viewers.data.total} onMove={showPage} />}
       </Panel>
 
       {current && opened?.mode === "info" && (
@@ -545,14 +552,14 @@ function EditViewer({ viewer, onClose, onSaved }: { viewer: Viewer; onClose: () 
 
 export function Sessions() {
   const [offset, setOffset] = useState(0);
-  const sessions = useLoad(() => api.page<Session>("/api/tenant/sessions", { limit: pageSize, offset }), 5000);
-  useEffect(() => void sessions.reload(), [offset]);
+  const sessions = useLoad(() => api.page<Session>("/api/tenant/sessions", { limit: pageSize, offset }), 5000, [offset]);
   // İzlemeler azalınca boşalan son sayfada kalınmaz.
   useEffect(() => {
     if (sessions.data && sessions.data.items.length === 0 && offset > 0) setOffset(Math.max(0, offset - pageSize));
   }, [sessions.data]);
   return (
     <Panel title="Süren izlemeler">
+      <ErrorNote message={sessions.data ? sessions.error : null} />
       {!sessions.data ? (
         <Loading error={sessions.error} />
       ) : sessions.data.items.length === 0 ? (
