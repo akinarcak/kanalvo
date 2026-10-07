@@ -54,6 +54,8 @@ docker compose exec -T api streamhub seed-dev
 `seed-dev` bir deneme yayıncısı, kanalı ve izleyicisi oluşturur ve değerlerini yazar:
 
 - OBS → Ayarlar → Yayın → Özel: sunucu `rtmp://localhost/live`, yayın anahtarı `<channel_id>?secret=<stream_secret>`
+- OBS'te gecikmeyi düşürmek için: Ayarlar → Çıkış → Çıkış kipi "Gelişmiş" → Yayın → "Anahtar kare aralığı" 2 sn.
+  Varsayılan ayarda aralık yaklaşık 8 saniyedir; yeni izleyici son anahtar kareden başladığı için o kadar geriden izler.
 - IPTV oynatıcısı (TiviMate, IPTV Smarters vb.) → "Xtream Codes" girişi: sunucu `http://localhost:8000`, kullanıcı adı `<username>`, şifre `<password>`
 - M3U listesi: `http://localhost:8000/get.php?username=<username>&password=<password>&type=m3u_plus&output=ts`
 - Doğrudan izleme: `http://localhost:8000/live/<username>/<password>/<channel_id>.ts` (veya `.m3u8`)

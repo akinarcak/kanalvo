@@ -22,6 +22,18 @@ http_server {
 }
 
 vhost __defaultVhost__ {
+    # Düşük gecikme: paketler bekletilmeden gönderilir. Anahtar kare önbelleği açık kalır; yeni
+    # izleyici son anahtar kareden başlar (yayıncının anahtar kare aralığı kadar geriden).
+    tcp_nodelay     on;
+    min_latency     on;
+    play {
+        gop_cache       on;
+        queue_length    10;
+        mw_latency      100;
+    }
+    publish {
+        mr          off;
+    }
     hls {
         enabled         on;
         hls_fragment    2;

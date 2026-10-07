@@ -276,6 +276,10 @@ function ObsSettings({ channel, onClose, onChanged }: { channel: Channel; onClos
       <CopyField label="Sunucu" value={channel.ingest_url} />
       <CopyField label="Yayın anahtarı" value={channel.stream_key} secret />
       <p className="muted small">Yayın anahtarı gizlidir: ele geçiren kişi bu kanala yayın açabilir.</p>
+      <p className="muted small">
+        Gecikmeyi düşürmek için: OBS → Ayarlar → Çıkış → Çıkış kipi "Gelişmiş" → Yayın sekmesinde "Anahtar kare aralığı" 2 sn. Varsayılan
+        ayarda bu aralık 8 saniyeyi bulur; kanalı açan izleyici o kadar geriden başlar ve kanal geç açılır.
+      </p>
       <ErrorNote message={action.error} />
       <button type="button" className="ghost" disabled={action.busy} onClick={regenerate}>
         Anahtarı yenile
