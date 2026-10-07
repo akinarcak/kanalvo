@@ -91,7 +91,9 @@ Bilinmesi gerekenler:
   sunucuda süren izlemeler kesilmez.
 - Sunucunun anahtarı ve ana sunucuyla arasındaki denetim trafiği HTTP ile açık taşınır. İki sunucu
   arasında özel ağ kullanın ya da `CONTROL_URL` ve sunucunun "yönetim adresi" için HTTPS adresleri
-  verin (SRS'in HTTPS adresine sorgu göndermesi bu projede denenmedi).
+  verin. `CONTROL_URL` için HTTPS adresi uçtan uca denendi (izleme, kesme, HLS). Yeni sunucu ana
+  sunucunun sertifikasını doğrulamaz: trafik şifrelenir ama araya giren biri kendini ana sunucu
+  gibi tanıtabilir; güvenilmeyen ağlarda özel ağ kullanın.
 - Yeni sunucuda veritabanı ya da imza anahtarı bulunmaz; her izlemeyi ana sunucu yetkilendirir. Ana
   sunucu durursa hiçbir sunucudan yeni izleme başlatılamaz.
 

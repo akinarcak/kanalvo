@@ -166,7 +166,13 @@ func TestSecondServerSharesTheViewers(t *testing.T) {
 	if key == "" {
 		t.Fatalf("kurulum bilgisinde edge anahtarı yok: %q", edge.Setup)
 	}
-	env := []string{"CONTROL_URL=http://api:8000", "EDGE_KEY=" + key, "ORIGIN_RTMP=srs:1935", "EDGE_PORT=" + edgePort}
+	// E2E_EDGE_CONTROL_URL: edge'in ana sunucuya başka bir adresten (ör. HTTPS sunan bir vekil
+	// üzerinden) bağlanmasını denemek içindir.
+	controlURL := os.Getenv("E2E_EDGE_CONTROL_URL")
+	if controlURL == "" {
+		controlURL = "http://api:8000"
+	}
+	env := []string{"CONTROL_URL=" + controlURL, "EDGE_KEY=" + key, "ORIGIN_RTMP=srs:1935", "EDGE_PORT=" + edgePort}
 	t.Cleanup(func() {
 		edgeCompose(t, env, "down", "-t", "2")
 		// Kayıt kalırsa sonraki testlerin izleyicileri olmayan bir sunucuya yönlendirilebilir.
