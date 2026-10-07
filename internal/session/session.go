@@ -252,23 +252,23 @@ func (m *Manager) pass(ctx context.Context, reconcile bool) error {
 }
 
 // enforceEdge, bir edge'e edgeTimeout kadar süre ayırır. Önce bağlantı listesi alınır: bu, edge'in
-// sağlık sinyalidir ve kesmelerin ne kadar sürdüğünden etkilenmemelidir. Liste alınamazsa aynı
-// geçişte kesme denenmez. Süreye sığmayan kesmeler sonraki geçişe kalır.
+// sağlık sinyalidir ve kesmelerin ne kadar sürdüğünden etkilenmemelidir. Liste alınamasa da kesmeler
+// denenir (SRS listeyi veremeyip kesmeleri yanıtlayabilir); yalnızca sağlık sinyali ve eşitleme
+// atlanır. Süreye sığmayan kesmeler sonraki geçişe kalır.
 func (m *Manager) enforceEdge(ctx context.Context, e store.Edge, reconcile bool) error {
 	srs := m.srsFor(e)
 	srsCtx, cancel := context.WithTimeout(ctx, edgeTimeout)
 	defer cancel()
 
 	var clients []string
+	var listed time.Time
+	var listErr error
 	if reconcile {
-		var err error
-		clients, err = srs.ClientIDs(srsCtx)
-		m.setDown(e.ID, err != nil)
-		if err != nil {
-			return err
-		}
-		if err := m.store.MarkEdgeSeen(ctx, e.ID); err != nil {
-			return err
+		clients, listErr = srs.ClientIDs(srsCtx)
+		listed = time.Now()
+		m.setDown(e.ID, listErr != nil)
+		if listErr == nil {
+			listErr = m.store.MarkEdgeSeen(ctx, e.ID)
 		}
 	}
 
@@ -276,14 +276,17 @@ func (m *Manager) enforceEdge(ctx context.Context, e store.Edge, reconcile bool)
 	resolve := func(id string) error { return m.store.ResolveEdgeKick(ctx, e.ID, id) }
 	unentitled := func(ctx context.Context) ([]string, error) { return m.store.TSSessionsToKick(ctx, e.ID) }
 	err := errors.Join(
+		listErr,
 		m.kickAll(srsCtx, srs, pending, resolve),
 		m.kickAll(srsCtx, srs, unentitled, nil),
 	)
-	if !reconcile {
+	if !reconcile || listErr != nil {
 		return err
 	}
-	// Liste kesmelerden önce alındı: az önce kesilen bağlantıların kayıtları bir sonraki geçişte silinir.
-	_, recErr := m.store.ReconcileTSSessions(ctx, e.ID, clients, reconcileGrace)
+	// Liste kesmelerden önce alındı: o andan sonra açılan oturumlar listede yoktur, bu yüzden
+	// tanınan süreye aradan geçen zaman eklenir. Az önce kesilen bağlantıların kayıtları bir
+	// sonraki geçişte silinir.
+	_, recErr := m.store.ReconcileTSSessions(ctx, e.ID, clients, reconcileGrace+time.Since(listed))
 	return errors.Join(err, recErr)
 }
 
@@ -303,10 +306,9 @@ func (m *Manager) kickAll(ctx context.Context, srs SRS, list func(context.Contex
 		var rejected *srsapi.StatusError
 		switch {
 		case err == nil, errors.As(err, &rejected):
+			// done yoksa kayıt bir oturumdur; zaten kopmuş bağlantının kaydını eşitleme siler.
 			if done != nil {
 				errs = append(errs, done(id))
-			} else if err != nil {
-				errs = append(errs, err)
 			}
 		default:
 			return errors.Join(append(errs, err)...)

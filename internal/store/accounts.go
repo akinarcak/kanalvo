@@ -56,6 +56,22 @@ func scanAdmin(row pgx.Row) (Admin, error) {
 	return a, notFound(err)
 }
 
+// ResetAdminPassword, yöneticinin şifresini değiştirir ve tüm panel oturumlarını aynı işlemde
+// kapatır: eski şifreyle araya giren bir giriş, sıfırlamadan sonra açık kalamaz.
+func (s *Store) ResetAdminPassword(ctx context.Context, id int64, passwordHash string) error {
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE admins SET password_hash = $2 WHERE id = $1`, id, passwordHash)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+		_, err = tx.Exec(ctx, `DELETE FROM panel_sessions WHERE role = 'admin' AND admin_id = $1`, id)
+		return err
+	})
+}
+
 func (s *Store) SetAdminPassword(ctx context.Context, id int64, passwordHash string) error {
 	return s.one(ctx, `UPDATE admins SET password_hash = $2 WHERE id = $1`, id, passwordHash)
 }

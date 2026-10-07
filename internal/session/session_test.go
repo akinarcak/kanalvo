@@ -230,17 +230,7 @@ func TestEnforceStepsAreIndependent(t *testing.T) {
 	if f.origin.got() != "[yayinci-1]" {
 		t.Fatalf("origin adımı .ts dağıtıcısındaki hatadan etkilenmemeli: %s", f.origin.got())
 	}
-	// Bağlantı listesini veremeyen bir SRS'e aynı geçişte kesme isteği gönderilmez.
-	if f.ts.got() != "[]" {
-		t.Fatalf("yanıt vermeyen SRS'e kesme isteği gitmemeli: %s", f.ts.got())
-	}
-
-	// Liste alınıyor ama kesmeler başarısızsa ilk hatadan sonra o SRS için denemeler durur.
-	f.ts.listErr = nil
-	f.ts.clients = []string{"izleyici-0", "izleyici-1", "izleyici-2"}
-	if err := f.m.EnforceOnce(ctx); err == nil {
-		t.Fatal("hata bildirilmeliydi")
-	}
+	// Yanıt vermeyen bir SRS'e aynı geçişte tekrar tekrar gidilmez.
 	if f.ts.got() != "[izleyici-0]" {
 		t.Fatalf("ilk hatadan sonra o SRS için kesme denemeleri durmalı: %s", f.ts.got())
 	}
@@ -577,5 +567,48 @@ func TestDeletedEdgeIsForgotten(t *testing.T) {
 	ok(t, f.m.EnforceOnce(ctx))
 	if session.DownCount(f.m) != 0 {
 		t.Fatalf("silinen edge'in kaydı kalmamalıydı: %d", session.DownCount(f.m))
+	}
+}
+
+// Bağlantı listesini veremeyen ama kesme isteklerini yanıtlayan bir SRS'te (ör. liste yanıtı
+// bozuk ya da çok yavaş) izleme hakkını yitirenler yine kesilir; edge yalnızca sağlık sinyali vermez.
+func TestKicksStillRunWhenOnlyTheClientListFails(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	remote, remoteSRS := f.addEdge("e1")
+	banned := must(f.s.CreateViewer(ctx, f.tenant, "veli", "pw", 1))
+	ok(t, f.m.OpenTS(ctx, remote, banned, f.channel, "uzak-askida", "1.1.1.1"))
+	ok(t, f.s.SetViewerStatus(ctx, banned, "suspended"))
+	remoteSRS.listErr = errors.New("srsapi: bağlantı listesi yanıtında clients alanı yok")
+
+	if err := f.m.EnforceOnce(ctx); err == nil {
+		t.Fatal("liste hatası bildirilmeliydi")
+	}
+	if remoteSRS.got() != "[uzak-askida]" {
+		t.Fatalf("liste alınamasa da askıdaki izleyici kesilmeliydi: %s", remoteSRS.got())
+	}
+	if f.healthy(remote) {
+		t.Fatal("listesi alınamayan edge sağlık sinyali vermiş sayılmamalı")
+	}
+	if n := testdb.Count(t, `SELECT count(*) FROM sessions WHERE session_key = 'uzak-askida'`); n != 1 {
+		t.Fatal("liste alınamadan oturum kaydı silinmemeliydi")
+	}
+}
+
+// Kesilmek istenen bağlantı SRS'te zaten yoksa bu bir arıza değildir; kaydı eşitleme siler.
+func TestKickingAnAlreadyGoneConnectionIsNotAFailure(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	banned := must(f.s.CreateViewer(ctx, f.tenant, "veli", "pw", 1))
+	ok(t, f.m.OpenTS(ctx, f.local, banned, f.channel, "gitmis", "1.1.1.1"))
+	testdb.Exec(t, `UPDATE sessions SET started_at = now() - interval '1 minute'`)
+	ok(t, f.s.SetViewerStatus(ctx, banned, "suspended"))
+	f.ts.kickErr = &srsapi.StatusError{Op: "DELETE", Code: 2049}
+
+	if err := f.m.EnforceOnce(ctx); err != nil {
+		t.Fatalf("zaten kopmuş bağlantı arıza sayıldı: %v", err)
+	}
+	if n := testdb.Count(t, `SELECT count(*) FROM sessions`); n != 0 {
+		t.Fatalf("SRS'te olmayan oturumun kaydı silinmeliydi: %d", n)
 	}
 }

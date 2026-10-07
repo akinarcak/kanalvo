@@ -253,12 +253,7 @@ func newAdminPassword(ctx context.Context, st *store.Store, email string) (strin
 	if err != nil {
 		return "", err
 	}
-	// Önce oturumlar kapanır: sonraki adım başarısız olursa şifre değişmemiş olur ve komut yeniden
-	// çalıştırılabilir; tersi sırada yeni şifre yazılmadan kaybolurdu.
-	if err := st.DeletePanelSessionsOf(ctx, "admin", admin.ID, nil); err != nil {
-		return "", err
-	}
-	if err := st.SetAdminPassword(ctx, admin.ID, hash); err != nil {
+	if err := st.ResetAdminPassword(ctx, admin.ID, hash); err != nil {
 		return "", err
 	}
 	return password, nil

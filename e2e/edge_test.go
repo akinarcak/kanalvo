@@ -236,8 +236,10 @@ func TestSecondServerSharesTheViewers(t *testing.T) {
 	case <-time.After(20 * time.Second):
 		t.Fatal("edge'de izleme başlamadı")
 	}
-	// Oturuma yazılan adres, edge'in nginx'inin bu izleme isteğinde gördüğü istemci adresi olmalıdır.
-	// Hangi adres olduğu Docker kurulumuna göre değişir; nginx'in erişim kaydından okunur.
+	// Oturuma yazılan adres, edge'in nginx'inin bu testin isteklerinde gördüğü istemci adresi
+	// olmalıdır. Hangi adres olduğu Docker kurulumuna göre değişir; nginx'in erişim kaydından okunur.
+	// nginx isteği bitince kaydeder: süren izleme henüz kayıtta yoktur, okunan satır 3. adımdaki
+	// tamamlanmış .ts isteğine aittir (aynı test sürecinden, yani aynı adresten).
 	viewerIP := ""
 	for _, line := range strings.Split(dockerValue(t, "logs", "--tail", "200", "streamhub-edge-edge-nginx-1"), "\n") {
 		if ip, rest, found := strings.Cut(line, " "); found && strings.Contains(rest, fmt.Sprintf(`"GET /live/%d.ts?`, channel.ID)) {

@@ -10,9 +10,11 @@ export function useLoad<T>(load: () => Promise<T>, refreshMs?: number, deps: rea
   const loader = useRef(load);
   loader.current = load;
   const latest = useRef(0);
+  const pending = useRef(0);
 
   const reload = useCallback(async () => {
     const mine = ++latest.current;
+    pending.current++;
     try {
       const result = await loader.current();
       if (mine !== latest.current) return;
@@ -20,13 +22,19 @@ export function useLoad<T>(load: () => Promise<T>, refreshMs?: number, deps: rea
       setError(null);
     } catch (e) {
       if (mine === latest.current) setError(messageOf(e));
+    } finally {
+      pending.current--;
     }
   }, []);
 
   useEffect(() => {
     void reload();
     if (!refreshMs) return;
-    const timer = window.setInterval(() => void reload(), refreshMs);
+    // Süren bir istek varken yenisi başlatılmaz: yavaş bir bağlantıda her yenileme bir öncekinin
+    // yanıtını geçersiz kılar ve liste hiç güncellenmezdi.
+    const timer = window.setInterval(() => {
+      if (pending.current === 0) void reload();
+    }, refreshMs);
     return () => window.clearInterval(timer);
   }, [reload, refreshMs, ...deps]);
 

@@ -304,7 +304,8 @@ export function Viewers() {
   const reload = () => void viewers.reload();
   useEffect(() => {
     // Yazarken her tuşta istek gitmesin diye kısa bir bekleme.
-    const timer = window.setTimeout(() => setQuery(search.trim()), 250);
+    // Sayfa aramayla birlikte sıfırlanır; ayrı sıfırlansaydı eski aramanın ilk sayfası boşuna istenirdi.
+    const timer = window.setTimeout(() => (setQuery(search.trim()), setOffset(0)), 250);
     return () => window.clearTimeout(timer);
   }, [search]);
   // Liste değişince (arama, sayfa) açık bilgi ya da düzenleme paneli kapanır; aksi halde
@@ -355,7 +356,7 @@ export function Viewers() {
             aria-label="Kullanıcı adında ara"
             value={search}
             maxLength={64}
-            onChange={(e) => (setSearch(e.target.value), showPage(0))}
+            onChange={(e) => (setOpened(null), setSearch(e.target.value))}
           />
         </div>
         {!viewers.data ? (
