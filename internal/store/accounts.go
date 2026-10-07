@@ -109,21 +109,58 @@ func (s *Store) TenantByID(ctx context.Context, id int64) (Tenant, error) {
 	return scanTenant(s.pool.QueryRow(ctx, tenantSelect+`WHERE t.id = $1`, id))
 }
 
-func (s *Store) UpdateTenantProfile(ctx context.Context, id int64, name, email string) error {
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE tenants SET name = $2, email = $3
-		WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM admins WHERE lower(email) = lower($3))`, id, name, email)
-	if err != nil {
-		return conflict(err)
-	}
-	if tag.RowsAffected() == 1 {
+// TenantProfile, yayıncının adı ve panel e-postasıdır.
+type TenantProfile struct {
+	Name  string
+	Email string
+}
+
+// TenantUpdate, bir yayıncıda değiştirilecek alanlardır; nil olanlara dokunulmaz.
+type TenantUpdate struct {
+	Profile *TenantProfile
+	Quotas  *Quotas
+	Status  *string
+}
+
+// UpdateTenant, verilen alanları tek işlemde değiştirir: biri uygulanamazsa hiçbiri uygulanmaz.
+// E-posta başka bir hesapta kullanılıyorsa ErrConflict döner. Askıya alınan yayıncının panel
+// oturumları da aynı işlemde kapanır.
+func (s *Store) UpdateTenant(ctx context.Context, id int64, u TenantUpdate) error {
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		// Satırı kilitlemek varlığını da doğrular.
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT true FROM tenants WHERE id = $1 FOR UPDATE`, id).Scan(&exists); err != nil {
+			return notFound(err)
+		}
+		if u.Profile != nil {
+			tag, err := tx.Exec(ctx, `
+				UPDATE tenants SET name = $2, email = $3
+				WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM admins WHERE lower(email) = lower($3))`, id, u.Profile.Name, u.Profile.Email)
+			if err != nil {
+				return err
+			}
+			if tag.RowsAffected() == 0 {
+				return ErrConflict // e-posta bir yöneticiye ait
+			}
+		}
+		if u.Quotas != nil {
+			if _, err := tx.Exec(ctx, `UPDATE tenants SET max_channels = $2, max_viewers = $3, max_connections = $4 WHERE id = $1`,
+				id, u.Quotas.MaxChannels, u.Quotas.MaxViewers, u.Quotas.MaxConnections); err != nil {
+				return err
+			}
+		}
+		if u.Status != nil {
+			if _, err := tx.Exec(ctx, `UPDATE tenants SET status = $2 WHERE id = $1`, id, *u.Status); err != nil {
+				return err
+			}
+			if *u.Status != "active" {
+				if _, err := tx.Exec(ctx, `DELETE FROM panel_sessions WHERE role = 'tenant' AND tenant_id = $1`, id); err != nil {
+					return err
+				}
+			}
+		}
 		return nil
-	}
-	// Satır güncellenmediyse ya yayıncı yoktur ya da e-posta bir yöneticiye aittir.
-	if _, err := s.TenantByID(ctx, id); err != nil {
-		return err
-	}
-	return ErrConflict
+	})
 }
 
 func (s *Store) SetTenantPassword(ctx context.Context, id int64, passwordHash string) error {

@@ -55,16 +55,16 @@ func TestTenantAccounts(t *testing.T) {
 	}
 
 	other := must(s.CreateTenantAccount(ctx, "Kanal B", "b@example.com", "x"))
-	if err := s.UpdateTenantProfile(ctx, other, "Kanal B2", "a@example.com"); !errors.Is(err, store.ErrConflict) {
+	if err := s.UpdateTenant(ctx, other, store.TenantUpdate{Profile: &store.TenantProfile{Name: "Kanal B2", Email: "a@example.com"}}); !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("başkasının e-postası alınamamalı, gelen: %v", err)
 	}
-	if err := s.UpdateTenantProfile(ctx, other, "Kanal B2", "b2@example.com"); err != nil {
+	if err := s.UpdateTenant(ctx, other, store.TenantUpdate{Profile: &store.TenantProfile{Name: "Kanal B2", Email: "b2@example.com"}}); err != nil {
 		t.Fatal(err)
 	}
 	if b := must(s.TenantByID(ctx, other)); b.Name != "Kanal B2" || b.Email != "b2@example.com" {
 		t.Fatalf("profil güncellenmeli: %+v", b)
 	}
-	if err := s.UpdateTenantProfile(ctx, other+999, "x", "x@example.com"); !errors.Is(err, store.ErrNotFound) {
+	if err := s.UpdateTenant(ctx, other+999, store.TenantUpdate{Profile: &store.TenantProfile{Name: "x", Email: "x@example.com"}}); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("ErrNotFound bekleniyordu, gelen: %v", err)
 	}
 	if err := s.SetTenantPassword(ctx, id, "yeni-ozet"); err != nil {
@@ -327,5 +327,61 @@ func TestActiveSessionsByTenantAndConnections(t *testing.T) {
 	got := fmt.Sprintf("%s %s %s %s | %s %s %s", list[0].Viewer, list[0].Channel, list[0].Kind, list[0].IP, list[1].Viewer, list[1].Kind, list[1].IP)
 	if got != "ali A1 ts 1.1.1.1 | ayse hls 2.2.2.2" {
 		t.Fatalf("oturum listesi: %s", got)
+	}
+}
+
+// Yayıncı güncellemesi tek işlemdir: bir parçası uygulanamazsa hiçbiri uygulanmaz.
+func TestUpdateTenantIsAllOrNothing(t *testing.T) {
+	s, ctx := testdb.New(t), context.Background()
+	must(s.CreateAdmin(ctx, "yonetici@example.com", "ozet"))
+	must(s.CreateTenantAccount(ctx, "Diğer", "diger@example.com", "ozet"))
+	id := must(s.CreateTenantAccount(ctx, "A", "a@example.com", "ozet"))
+	if err := s.CreatePanelSession(ctx, []byte("oturum"), "tenant", id, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	suspended, quotas := "suspended", store.Quotas{MaxChannels: 1, MaxViewers: 2, MaxConnections: 3}
+
+	for name, email := range map[string]string{"yöneticinin e-postası": "Yonetici@example.com", "başka yayıncının e-postası": "DIGER@example.com"} {
+		err := s.UpdateTenant(ctx, id, store.TenantUpdate{
+			Status: &suspended, Quotas: &quotas, Profile: &store.TenantProfile{Name: "B", Email: email},
+		})
+		if !errors.Is(err, store.ErrConflict) {
+			t.Fatalf("%s: ErrConflict bekleniyordu, gelen: %v", name, err)
+		}
+		got := must(s.TenantByID(ctx, id))
+		if got.Name != "A" || got.Email != "a@example.com" || got.Status != "active" || got.Quotas.MaxChannels == 1 {
+			t.Fatalf("%s: yarım güncelleme: %+v", name, got)
+		}
+		if _, err := s.PanelSessionByHash(ctx, []byte("oturum")); err != nil {
+			t.Fatalf("%s: uygulanmayan askıya alma panel oturumunu kapattı: %v", name, err)
+		}
+	}
+
+	if err := s.UpdateTenant(ctx, id, store.TenantUpdate{
+		Status: &suspended, Quotas: &quotas, Profile: &store.TenantProfile{Name: "B", Email: "b@example.com"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := must(s.TenantByID(ctx, id))
+	if got.Name != "B" || got.Email != "b@example.com" || got.Status != "suspended" || got.Quotas != quotas {
+		t.Fatalf("güncelleme: %+v", got)
+	}
+	if _, err := s.PanelSessionByHash(ctx, []byte("oturum")); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("askıya alınan yayıncının panel oturumu kapanmalıydı: %v", err)
+	}
+
+	// Yalnızca verilen alanlar değişir; etkinleştirme oturum silmez.
+	active := "active"
+	if err := s.UpdateTenant(ctx, id, store.TenantUpdate{Status: &active}); err != nil {
+		t.Fatal(err)
+	}
+	if got := must(s.TenantByID(ctx, id)); got.Name != "B" || got.Status != "active" || got.Quotas != quotas {
+		t.Fatalf("kısmi güncelleme: %+v", got)
+	}
+	if err := s.UpdateTenant(ctx, 999999, store.TenantUpdate{Status: &active}); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("olmayan yayıncı için ErrNotFound bekleniyordu: %v", err)
+	}
+	if err := s.UpdateTenant(ctx, 999999, store.TenantUpdate{Profile: &store.TenantProfile{Name: "x", Email: "x@example.com"}}); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("olmayan yayıncı için ErrNotFound bekleniyordu: %v", err)
 	}
 }

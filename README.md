@@ -25,6 +25,12 @@ Panel `http://localhost:8002` adresinde açılır. İlk yöneticiyi komutla olu�
 docker compose exec -T api streamhub create-admin siz@ornek.com
 ```
 
+Yönetici şifresini unutursanız aynı yolla yenisini alırsınız; açık oturumları kapanır:
+
+```bash
+docker compose exec -T api streamhub reset-admin-password siz@ornek.com
+```
+
 - **Yönetici** yayıncı ekler, kotalarını belirler, askıya alır ve panel şifresini sıfırlar; izleyicilerin
   dağıtıldığı sunucuları yönetir.
 - **Yayıncı** kendi kanallarını, kategorilerini ve izleyicilerini yönetir; OBS ayarlarını ve izleyicinin

@@ -54,13 +54,14 @@ const (
 
 func main() {
 	commands := map[string]func(context.Context, []string) error{
-		"serve":             func(ctx context.Context, _ []string) error { return serve(ctx) },
-		"seed-dev":          func(ctx context.Context, _ []string) error { return seedDev(ctx) },
-		"set-tenant-status": setTenantStatus,
-		"create-admin":      createAdmin,
+		"serve":                func(ctx context.Context, _ []string) error { return serve(ctx) },
+		"seed-dev":             func(ctx context.Context, _ []string) error { return seedDev(ctx) },
+		"set-tenant-status":    setTenantStatus,
+		"create-admin":         createAdmin,
+		"reset-admin-password": resetAdminPassword,
 	}
 	if len(os.Args) < 2 || commands[os.Args[1]] == nil {
-		fmt.Fprintln(os.Stderr, "kullanım: streamhub serve | seed-dev | create-admin <e-posta> | set-tenant-status <yayıncı no> <active|suspended>")
+		fmt.Fprintln(os.Stderr, "kullanım: streamhub serve | seed-dev | create-admin <e-posta> | reset-admin-password <e-posta> | set-tenant-status <yayıncı no> <active|suspended>")
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -218,6 +219,44 @@ func createAdmin(ctx context.Context, args []string) error {
 		return fmt.Errorf("yönetici oluşturulamadı (e-posta kullanılıyor olabilir): %w", err)
 	}
 	return json.NewEncoder(os.Stdout).Encode(map[string]string{"email": args[0], "password": password})
+}
+
+// resetAdminPassword, şifresini unutan yöneticiye yeni bir rastgele şifre verir ve bir kez yazar.
+func resetAdminPassword(ctx context.Context, args []string) error {
+	if len(args) != 1 || !strings.Contains(args[0], "@") {
+		return errors.New("kullanım: reset-admin-password <e-posta>")
+	}
+	st, err := openStore(ctx, os.Getenv("DATABASE_URL"))
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	password, err := newAdminPassword(ctx, st, args[0])
+	if errors.Is(err, store.ErrNotFound) {
+		return fmt.Errorf("%s adresiyle kayıtlı bir yönetici yok", args[0])
+	}
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(map[string]string{"email": args[0], "password": password})
+}
+
+// newAdminPassword, yöneticinin şifresini rastgele bir şifreyle değiştirir ve açık panel
+// oturumlarını kapatır. Böyle bir yönetici yoksa store.ErrNotFound döner.
+func newAdminPassword(ctx context.Context, st *store.Store, email string) (string, error) {
+	admin, err := st.AdminByEmail(ctx, email)
+	if err != nil {
+		return "", err
+	}
+	password := randomHex(10)
+	hash, err := passhash.Hash(password)
+	if err != nil {
+		return "", err
+	}
+	if err := st.SetAdminPassword(ctx, admin.ID, hash); err != nil {
+		return "", err
+	}
+	return password, st.DeletePanelSessionsOf(ctx, "admin", admin.ID, nil)
 }
 
 // setTenantStatus, bir yayıncıyı askıya alır veya yeniden etkinleştirir. Askıya alınan yayıncının

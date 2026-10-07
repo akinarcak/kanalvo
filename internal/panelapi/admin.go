@@ -183,35 +183,22 @@ func (h *Handler) adminUpdateTenant(w http.ResponseWriter, r *http.Request, _ ac
 		return
 	}
 
+	// Askıya alınan yayıncının panel oturumları aynı işlemde kapanır; süren yayın ve izlemelerini
+	// uygulama döngüsü birkaç saniyede keser.
+	u := store.TenantUpdate{Status: in.Status}
 	if in.Name != nil || in.Email != nil {
 		if email == "" {
 			fail(w, http.StatusBadRequest, "invalid", "Bu yayıncının panel hesabı yok; önce e-posta adresi verin.")
 			return
 		}
-		if err := h.store.UpdateTenantProfile(ctx, id, name, email); err != nil {
-			h.storeError(w, err, emailTaken)
-			return
-		}
+		u.Profile = &store.TenantProfile{Name: name, Email: email}
 	}
 	if in.Quotas != nil {
-		q := store.Quotas{MaxChannels: in.Quotas.MaxChannels, MaxViewers: in.Quotas.MaxViewers, MaxConnections: in.Quotas.MaxConnections}
-		if err := h.store.SetTenantQuotas(ctx, id, q); err != nil {
-			h.storeError(w, err, "")
-			return
-		}
+		u.Quotas = &store.Quotas{MaxChannels: in.Quotas.MaxChannels, MaxViewers: in.Quotas.MaxViewers, MaxConnections: in.Quotas.MaxConnections}
 	}
-	if in.Status != nil {
-		if err := h.store.SetTenantStatus(ctx, id, *in.Status); err != nil {
-			h.internal(w, err)
-			return
-		}
-		if *in.Status == "suspended" {
-			// Panel oturumları hemen kapanır; süren yayın ve izlemeleri uygulama döngüsü birkaç saniyede keser.
-			if err := h.store.DeletePanelSessionsOf(ctx, roleTenant, id, nil); err != nil {
-				h.internal(w, err)
-				return
-			}
-		}
+	if err := h.store.UpdateTenant(ctx, id, u); err != nil {
+		h.storeError(w, err, emailTaken)
+		return
 	}
 	t, err := h.tenantSummary(ctx, id)
 	if err != nil {
