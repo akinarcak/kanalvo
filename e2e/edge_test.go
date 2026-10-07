@@ -75,16 +75,31 @@ func redirectHosts(t *testing.T, playURL string, n int) map[string]int {
 }
 
 func status(u string, header ...string) int {
+	code, _ := statusAndHeader(u, header...)
+	return code
+}
+
+func statusAndHeader(u string, header ...string) (int, http.Header) {
 	req, _ := http.NewRequest(http.MethodGet, u, nil)
 	for i := 0; i+1 < len(header); i += 2 {
 		req.Header.Set(header[i], header[i+1])
 	}
 	resp, err := noRedirect.Do(req)
 	if err != nil {
-		return 0
+		return 0, nil
 	}
 	resp.Body.Close()
-	return resp.StatusCode
+	return resp.StatusCode, resp.Header
+}
+
+// dockerValue, bir docker komutunun çıktısını boşlukları atarak döner.
+func dockerValue(t *testing.T, args ...string) string {
+	t.Helper()
+	out, err := exec.Command("docker", args...).Output()
+	if err != nil {
+		t.Fatalf("docker %s: %v", strings.Join(args, " "), err)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // İkinci bir sunucu edge olarak kaydedildiğinde izleyiciler iki sunucuya dağılmalı; edge'den hem
@@ -193,14 +208,14 @@ func TestSecondServerSharesTheViewers(t *testing.T) {
 	})
 
 	// 2. Çekme adresi kayıtlı değilken edge origin'den yayın alamaz.
-	if body, _ := fetch(playURL("ts"), 3*188); isMPEGTS(body) {
-		t.Fatal("çekme adresi kayıtlı olmayan edge origin'den yayın alabildi")
+	// Tek deneme yetmez: ilk istek, edge henüz origin'e bağlanmadığı için de boş dönebilir.
+	for i := 0; i < 3; i++ {
+		if body, _ := fetch(playURL("ts"), 3*188); isMPEGTS(body) {
+			t.Fatalf("çekme adresi kayıtlı olmayan edge origin'den yayın alabildi (%d. deneme)", i+1)
+		}
 	}
-	out, err := exec.Command("docker", "inspect", "-f", `{{(index .NetworkSettings.Networks "streamhub_default").IPAddress}}`, edgeSRS).Output()
-	if err != nil {
-		t.Fatalf("edge SRS adresi okunamadı: %v", err)
-	}
-	admin.call("PATCH", edgePath, map[string]any{"pull_ip": strings.TrimSpace(string(out))}, nil, http.StatusOK)
+	pullIP := dockerValue(t, "inspect", "-f", `{{(index .NetworkSettings.Networks "streamhub_default").IPAddress}}`, edgeSRS)
+	admin.call("PATCH", edgePath, map[string]any{"pull_ip": pullIP}, nil, http.StatusOK)
 
 	// 3. Edge'den kesintisiz .ts.
 	var final *url.URL
@@ -221,14 +236,16 @@ func TestSecondServerSharesTheViewers(t *testing.T) {
 	case <-time.After(20 * time.Second):
 		t.Fatal("edge'de izleme başlamadı")
 	}
+	// Test, edge'e yayınlanmış bağlantı noktasından bağlanır; nginx bu bağlantıyı kendi ağının
+	// ağ geçidinden gelmiş görür. Oturuma yazılan adres tam olarak bu olmalıdır.
+	viewerIP := dockerValue(t, "network", "inspect", "-f", `{{(index .IPAM.Config 0).Gateway}}`, "streamhub-edge_default")
 	waitFor(t, "edge'deki izlemenin panelde görünmesi", 15*time.Second, func() bool {
 		var sessions []struct{ Viewer, Edge, Kind, IP string }
 		owner.call("GET", "/api/tenant/sessions", nil, &sessions, http.StatusOK)
 		for _, s := range sessions {
 			if s.Viewer == viewer.Username && s.Kind == "ts" && s.Edge == edge.Name {
-				nginx, _ := exec.Command("docker", "inspect", "-f", `{{(index .NetworkSettings.Networks "streamhub-edge_default").IPAddress}}`, "streamhub-edge-edge-nginx-1").Output()
-				if s.IP == strings.TrimSpace(string(nginx)) {
-					t.Fatalf("oturuma izleyicinin değil edge'in nginx adresi yazıldı: %s", s.IP)
+				if s.IP != viewerIP {
+					t.Fatalf("oturuma izleyicinin adresi (%s) yazılmalıydı: %s", viewerIP, s.IP)
 				}
 				return true
 			}
@@ -254,28 +271,32 @@ func TestSecondServerSharesTheViewers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 2; i++ { // ikincisi edge'in önbelleğinden
-		if body, _ := fetch(segURL.String(), 3*188); !isMPEGTS(body) {
-			t.Fatalf("edge'den HLS parçası MPEG-TS değil (%d. istek): %s", i+1, segURL.Path)
-		}
+	if body, _ := fetch(segURL.String(), 3*188); !isMPEGTS(body) {
+		t.Fatalf("edge'den HLS parçası MPEG-TS değil: %s", segURL.Path)
+	}
+	// Aynı parçanın ikinci isteği ana sunucuya gitmez, edge'in önbelleğinden verilir.
+	if code, h := statusAndHeader(segURL.String()); code != http.StatusOK || h.Get("X-Cache-Status") != "HIT" {
+		t.Fatalf("parça edge'in önbelleğinden gelmeliydi: durum %d, önbellek %q", code, h.Get("X-Cache-Status"))
 	}
 	segFile := segURL.Path[strings.LastIndex(segURL.Path, "/")+1:]
 
 	// 6. Edge'de yetkisiz erişim.
-	for what, u := range map[string]string{
-		"imzasız parça (iç konum)":    edgeURL + "/_segment/" + segFile,
-		"sahte imzayla parça":         edgeURL + "/hls/sahte/" + segFile,
-		"sahte imzayla çalma listesi": fmt.Sprintf("%s/hls/sahte/%d.m3u8", edgeURL, channel.ID),
-		"anahtarsız yönetim API'si":   edgeURL + "/_srs/api/v1/clients/",
-		"SRS'in kendi sayfaları":      edgeURL + "/",
-		"SRS'in HLS çıkışı":           fmt.Sprintf("%s/live/%d.m3u8", edgeURL, channel.ID),
+	for _, c := range []struct {
+		what, url string
+		want      int
+	}{
+		{"imzasız parça (iç konum)", edgeURL + "/_segment/" + segFile, http.StatusNotFound},
+		{"sahte imzayla parça", edgeURL + "/hls/sahte/" + segFile, http.StatusForbidden},
+		{"sahte imzayla çalma listesi", fmt.Sprintf("%s/hls/sahte/%d.m3u8", edgeURL, channel.ID), http.StatusForbidden},
+		{"anahtarsız yönetim API'si", edgeURL + "/_srs/api/v1/clients/", http.StatusForbidden},
+		{"SRS'in kendi sayfaları", edgeURL + "/", http.StatusNotFound},
+		{"SRS'in HLS çıkışı", fmt.Sprintf("%s/live/%d.m3u8", edgeURL, channel.ID), http.StatusNotFound},
+		// SRS reddettiği izlemede yanıt vermeden bağlantıyı kapatır; nginx bunu 502 olarak bildirir.
+		{"sahte imzayla .ts", fmt.Sprintf("%s/live/%d.ts?token=sahte", edgeURL, channel.ID), http.StatusBadGateway},
 	} {
-		if code := status(u); code == http.StatusOK || code == 0 {
-			t.Errorf("edge'de %s: durum %d", what, code)
+		if code := status(c.url); code != c.want {
+			t.Errorf("edge'de %s: durum %d, beklenen %d", c.what, code, c.want)
 		}
-	}
-	if code := status(fmt.Sprintf("%s/live/%d.ts?token=sahte", edgeURL, channel.ID)); code == http.StatusOK {
-		t.Error("edge sahte imzayla .ts verdi")
 	}
 	// Ana sunucunun edge uçları anahtarsız kullanılamaz; izleyici adresini de belirleyemez.
 	for _, u := range []string{apiURL + "/edge/segment/" + segFile, apiURL + "/edge" + playlistURL.Path} {
