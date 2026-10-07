@@ -13,3 +13,10 @@ func SetEdgeTimeout(t *testing.T, d time.Duration) {
 	edgeTimeout = d
 	t.Cleanup(func() { edgeTimeout = old })
 }
+
+// DownCount, ulaşılamadığı kaydedilmiş edge sayısıdır.
+func DownCount(m *Manager) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.down)
+}

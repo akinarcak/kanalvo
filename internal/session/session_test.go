@@ -544,3 +544,38 @@ func TestKickBacklogDoesNotCostAnEdgeItsHealth(t *testing.T) {
 		t.Fatal("yanıt veren edge istek sırasındaki kesmelerde atlandı")
 	}
 }
+
+// Log anahtarı yalnızca her denemede değişen kısımları atar: geçici bağlantı noktası ve kesilmek
+// istenen bağlantının kimliği. Edge adı, hedef adres ve hata kodu korunur.
+func TestFailureKeyKeepsWhatIdentifiesTheFailure(t *testing.T) {
+	key := func(s string) string { return session.FailureKey(errors.New(s)) }
+	if key(`edge "e1": srsapi: DELETE /api/v1/clients/abc123: kod 2049`) != key(`edge "e1": srsapi: DELETE /api/v1/clients/x_9-z: kod 2049`) {
+		t.Fatal("yalnızca bağlantı kimliği farklı olan arızalar aynı sayılmalı")
+	}
+	for name, pair := range map[string][2]string{
+		"hata kodu":   {`srsapi: DELETE /api/v1/clients/a: kod 2049`, `srsapi: DELETE /api/v1/clients/a: kod 1000`},
+		"edge adı":    {`edge "fra:1": bağlantı reddedildi`, `edge "fra:2": bağlantı reddedildi`},
+		"hedef adres": {`dial tcp 10.0.0.5:80: connect: connection refused`, `dial tcp 10.0.0.5:8443: connect: connection refused`},
+	} {
+		if key(pair[0]) == key(pair[1]) {
+			t.Errorf("%s farklıyken arızalar aynı sayıldı: %q", name, key(pair[0]))
+		}
+	}
+}
+
+// Silinen bir edge'in "ulaşılamıyor" kaydı bellekte kalmaz.
+func TestDeletedEdgeIsForgotten(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	remote, remoteSRS := f.addEdge("e1")
+	remoteSRS.listErr = errors.New("bağlantı reddedildi")
+	_ = f.m.EnforceOnce(ctx)
+	if session.DownCount(f.m) != 1 {
+		t.Fatalf("ulaşılamayan edge kaydedilmeliydi: %d", session.DownCount(f.m))
+	}
+	ok(t, f.s.DeleteEdge(ctx, remote))
+	ok(t, f.m.EnforceOnce(ctx))
+	if session.DownCount(f.m) != 0 {
+		t.Fatalf("silinen edge'in kaydı kalmamalıydı: %d", session.DownCount(f.m))
+	}
+}

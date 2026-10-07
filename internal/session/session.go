@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"slices"
 	"sync"
 	"time"
 
@@ -38,16 +39,22 @@ const (
 // Denetim aralığından kısadır: yanıt vermeyen bir edge diğerlerinin sağlık sinyalini geciktirmez.
 var edgeTimeout = 4 * time.Second
 
-var portPattern = regexp.MustCompile(`:\d+`)
+var (
+	// Giden bağlantının geçici bağlantı noktası: "172.18.0.3:51234->172.18.0.7:80".
+	sourcePortPattern = regexp.MustCompile(`:\d+->`)
+	// Kesilmek istenen bağlantının kimliği: "DELETE /api/v1/clients/abc123".
+	clientIDPattern = regexp.MustCompile(`/clients/[A-Za-z0-9_-]+`)
+)
 
 // failureKey, bir arızanın loglarda tekrarlanıp tekrarlanmadığını anlamak için kullanılan
-// metindir: bağlantı noktaları atılır, çünkü her denemede değişen geçici bağlantı noktası aynı
-// arızayı yeni bir arıza gibi gösterir.
+// metindir. Her denemede değişen kısımlar (geçici bağlantı noktası, bağlantı kimliği) atılır;
+// aksi halde süren tek bir arıza her geçişte yeni bir arıza gibi loga yazılırdı.
 func failureKey(err error) string {
 	if err == nil {
 		return ""
 	}
-	return portPattern.ReplaceAllString(err.Error(), "")
+	key := sourcePortPattern.ReplaceAllString(err.Error(), "->")
+	return clientIDPattern.ReplaceAllString(key, "/clients/*")
 }
 
 // SRS, bir SRS'in yönetim API'sinin kullanılan kısmıdır (bkz. srsapi.Client).
@@ -80,6 +87,17 @@ func (m *Manager) isDown(edgeID int64) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.down[edgeID]
+}
+
+// forgetMissing, artık kayıtlı olmayan edge'lerin "ulaşılamıyor" kaydını siler.
+func (m *Manager) forgetMissing(edges []store.Edge) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id := range m.down {
+		if !slices.ContainsFunc(edges, func(e store.Edge) bool { return e.ID == id }) {
+			delete(m.down, id)
+		}
+	}
 }
 
 func (m *Manager) setDown(edgeID int64, down bool) {
@@ -202,6 +220,9 @@ func (m *Manager) pass(ctx context.Context, reconcile bool) error {
 	edges, listErr := m.store.Edges(ctx, 0)
 	errs := make([]error, len(edges)+2)
 	errs[len(edges)+1] = listErr
+	if listErr == nil {
+		m.forgetMissing(edges)
+	}
 
 	var wg sync.WaitGroup
 	wg.Add(1)

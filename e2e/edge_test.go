@@ -236,9 +236,17 @@ func TestSecondServerSharesTheViewers(t *testing.T) {
 	case <-time.After(20 * time.Second):
 		t.Fatal("edge'de izleme başlamadı")
 	}
-	// Test, edge'e yayınlanmış bağlantı noktasından bağlanır; nginx bu bağlantıyı kendi ağının
-	// ağ geçidinden gelmiş görür. Oturuma yazılan adres tam olarak bu olmalıdır.
-	viewerIP := dockerValue(t, "network", "inspect", "-f", `{{(index .IPAM.Config 0).Gateway}}`, "streamhub-edge_default")
+	// Oturuma yazılan adres, edge'in nginx'inin bu izleme isteğinde gördüğü istemci adresi olmalıdır.
+	// Hangi adres olduğu Docker kurulumuna göre değişir; nginx'in erişim kaydından okunur.
+	viewerIP := ""
+	for _, line := range strings.Split(dockerValue(t, "logs", "--tail", "200", "streamhub-edge-edge-nginx-1"), "\n") {
+		if ip, rest, found := strings.Cut(line, " "); found && strings.Contains(rest, fmt.Sprintf(`"GET /live/%d.ts?`, channel.ID)) {
+			viewerIP = ip
+		}
+	}
+	if viewerIP == "" {
+		t.Fatal("edge'in nginx erişim kaydında izleme isteği bulunamadı")
+	}
 	waitFor(t, "edge'deki izlemenin panelde görünmesi", 15*time.Second, func() bool {
 		var sessions []struct{ Viewer, Edge, Kind, IP string }
 		owner.call("GET", "/api/tenant/sessions", nil, &sessions, http.StatusOK)
@@ -291,12 +299,15 @@ func TestSecondServerSharesTheViewers(t *testing.T) {
 		{"anahtarsız yönetim API'si", edgeURL + "/_srs/api/v1/clients/", http.StatusForbidden},
 		{"SRS'in kendi sayfaları", edgeURL + "/", http.StatusNotFound},
 		{"SRS'in HLS çıkışı", fmt.Sprintf("%s/live/%d.m3u8", edgeURL, channel.ID), http.StatusNotFound},
-		// SRS reddettiği izlemede yanıt vermeden bağlantıyı kapatır; nginx bunu 502 olarak bildirir.
-		{"sahte imzayla .ts", fmt.Sprintf("%s/live/%d.ts?token=sahte", edgeURL, channel.ID), http.StatusBadGateway},
 	} {
 		if code := status(c.url); code != c.want {
 			t.Errorf("edge'de %s: durum %d, beklenen %d", c.what, code, c.want)
 		}
+	}
+	// SRS reddettiği izlemeyi sürümüne göre farklı bildirir (5.0.225 yanıt vermeden kapatır, nginx
+	// 502 döner); değişmeyen kural, sahte imzanın hata almasıdır.
+	if code := status(fmt.Sprintf("%s/live/%d.ts?token=sahte", edgeURL, channel.ID)); code < 400 {
+		t.Errorf("edge'de sahte imzayla .ts: durum %d", code)
 	}
 	// Ana sunucunun edge uçları anahtarsız kullanılamaz; izleyici adresini de belirleyemez.
 	for _, u := range []string{apiURL + "/edge/segment/" + segFile, apiURL + "/edge" + playlistURL.Path} {

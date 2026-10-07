@@ -447,6 +447,13 @@ func TestHLSSessionFollowsTheEdgeItIsServedFrom(t *testing.T) {
 	if edgeOf() != int(testdb.LocalEdge(t)) {
 		t.Fatalf("oturum yerel edge'de açılmalıydı: %d", edgeOf())
 	}
+	// Yeni görülmüş oturum yeniden yazılmaz: adresi iki sunucu arasında gezdiren bir istemci her
+	// istekte veritabanına yazdıramaz. Sunucu bilgisi, son görülme zamanıyla birlikte güncellenir.
+	wantEvicted(t, must(f.s.TouchHLSSession(ctx, remote, f.viewer, f.channel, "k1", "1.1.1.1", idle)))
+	if edgeOf() != int(testdb.LocalEdge(t)) {
+		t.Fatalf("yeni görülmüş oturum yeniden yazılmamalıydı: %d", edgeOf())
+	}
+	testdb.Exec(t, `UPDATE sessions SET last_seen_at = now() - interval '12 seconds' WHERE session_key = 'k1'`)
 	wantEvicted(t, must(f.s.TouchHLSSession(ctx, remote, f.viewer, f.channel, "k1", "1.1.1.1", idle)))
 	if edgeOf() != int(remote) {
 		t.Fatalf("oturum isteğin geldiği edge'e geçmeliydi: %d", edgeOf())
