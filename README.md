@@ -42,7 +42,8 @@ kanallarını ve izleyicilerini yönetir. Görüntüler deneme verisiyle alınm�
 
 | Servis | Görevi | Dış port |
 |---|---|---|
-| `api` | Xtream yayın adresleri ve HLS geçidi (8000); SRS yetki sorguları (8001, yalnızca iç ağ); yönetim paneli (8002) | 8000, 8002 |
+| `api` | Xtream yayın adresleri ve HLS geçidi (8000); SRS yetki sorguları (8001, yalnızca iç ağ); yönetim paneli (8002, düz HTTP) | 8000; 8002 yalnızca 127.0.0.1 |
+| `caddy` | Paneli HTTPS ile sunan ters vekil; sertifikayı kendisi alır | 80, 443 |
 | `srs` | OBS'ten RTMP yayını alır, HLS üretir | 1935 |
 | `srs-ts` | Kesintisiz MPEG-TS (`.ts`) dağıtır | 8081 |
 | `postgres` | Veritabanı | yalnızca 127.0.0.1:5432 |
@@ -52,7 +53,7 @@ HLS izleyiciye yalnızca `api` içindeki `/hls/<imza>/…` geçidinden verilir.
 
 ## Yönetim paneli
 
-Panel `http://localhost:8002` adresinde açılır. İlk yöneticiyi komutla oluşturun; şifresi yalnızca bir kez yazılır:
+Panel `https://localhost` adresinde (sunucuda `https://<PANEL_DOMAIN>`) açılır. İlk yöneticiyi komutla oluşturun; şifresi yalnızca bir kez yazılır:
 
 ```bash
 docker compose exec -T api kanalvo create-admin siz@ornek.com
@@ -69,12 +70,36 @@ docker compose exec -T api kanalvo reset-admin-password siz@ornek.com
 - **Yayıncı** kendi kanallarını, kategorilerini ve izleyicilerini yönetir; OBS ayarlarını ve izleyicinin
   giriş bilgilerini kopyalar; süren izlemeleri görür.
 
-Sunucuda paneli (8002) yalnızca HTTPS sunan bir vekilin arkasından yayınlayın ve `.env` içinde:
+### HTTPS
 
-- `PANEL_INSECURE_COOKIE` satırını silin; aksi halde giriş çerezi şifresiz bağlantıdan da gönderilir.
-- `PANEL_TRUST_PROXY_HEADERS=true` yapın; aksi halde tüm girişler vekilin adresinden geliyor görünür ve
-  birinin 20 hatalı girişi herkesi panelin dışında bırakır. Bu ayar izleyici uçlarının
-  `TRUST_PROXY_HEADERS` ayarından bağımsızdır.
+Panel dışarıya yalnızca `caddy` servisinden, HTTPS ile açılır; `docker compose up` onu da kaldırır.
+`api`'nin panel portu (8002) yalnızca `127.0.0.1`'e bağlanır. Xtream (8000) ve `.ts` (8081) uçları
+tasarım gereği HTTP'de kalır (HTTPS desteklemeyen oynatıcılar için).
+
+- **Sunucuda:** `.env` içinde `PANEL_DOMAIN=panel.ornek.com` yazın. Alan adının DNS kaydı sunucuya
+  yönlenmeli, 80 ve 443 portları dışarıdan açık olmalıdır. Caddy sertifikayı ACME ile (Let's
+  Encrypt, ZeroSSL) ilk açılışta alır ve yeniler; HTTP istekleri HTTPS'e yönlendirilir.
+  Sertifikalar `caddy_data` biriminde durur; birimi silmeyin, aksi halde her açılışta yeniden
+  istenir ve sağlayıcının sınırına takılabilirsiniz. Sertifika alınamazsa nedeni
+  `docker compose logs caddy` içindedir.
+- **Yerelde:** `PANEL_DOMAIN=localhost` (verilmezse de bu kullanılır). Caddy kendi iç CA'sıyla
+  sertifika üretir ("tls internal"); tarayıcı bu CA'yı tanımadığı için ilk açılışta uyarır. Uyarıyı
+  kaldırmak için CA'yı dışarı alıp tarayıcıya ya da işletim sistemine güvenilen kök olarak ekleyin:
+
+  ```bash
+  docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt kanalvo-yerel-ca.crt
+  ```
+
+- Panel, istemcinin adresini Caddy'nin yazdığı `X-Forwarded-For` başlığından okur
+  (`PANEL_TRUST_PROXY_HEADERS=true`, Compose'da varsayılan). Caddy istemcinin gönderdiği başlığı
+  atar; 20 hatalı giriş kilidi böylece vekile değil, girişi deneyen istemciye uygulanır. Bu ayar
+  izleyici uçlarının `TRUST_PROXY_HEADERS` ayarından bağımsızdır.
+- Giriş çerezi yalnızca HTTPS'ten gönderilir. `PANEL_INSECURE_COOKIE`'yi yazmayın; o ayar yalnızca
+  paneli vekilsiz, düz HTTP ile denemek içindir.
+- Panel portunu başka bir arayüze açmayın (`KANALVO_PANEL_BIND`): `PANEL_TRUST_PROXY_HEADERS` açıkken
+  8002'ye doğrudan ulaşan biri `X-Forwarded-For` uydurarak giriş kilidinden kaçabilir.
+- 80 ve 443 doluysa ya da Docker 1024 altındaki portları açamıyorsa (rootless) `KANALVO_HTTP_PORT` ve
+  `KANALVO_HTTPS_PORT` ile başka portlar verin (ör. 8080, 8443). ACME için sunucuda dış 80/443 şarttır.
 
 Arayüzün kaynağı `web/` klasöründedir ve Docker imajı oluşturulurken derlenir. Arayüz üzerinde
 çalışırken `cd web && npm install && npm run dev` ile geliştirme sunucusunu açabilirsiniz; API
@@ -184,9 +209,12 @@ Bilinmesi gerekenler:
 | `TRUST_PROXY_HEADERS` | İstemci IP'sini `X-Forwarded-For` başlığının son değerinden alır. Yalnızca API bu başlığı yazan bir vekilin arkasındayken açın; aksi halde giriş sınırı atlatılabilir | false |
 | `TOKEN_TTL`, `HLS_TOKEN_TTL` | `.ts` ve HLS imzalarının ömrü | 5m, 6h |
 | `INGEST_BASE_URL` | Yayıncıların OBS'e yazacağı sunucu adresi; panelde gösterilir | zorunlu |
+| `PANEL_DOMAIN` | Panelin alan adı; gerçek alan adında Caddy sertifikayı ACME ile alır, `localhost`'ta iç CA'yı kullanır | localhost |
 | `PANEL_SESSION_TTL` | Panel oturumunun ömrü | 12h |
-| `PANEL_INSECURE_COOKIE` | Panel çerezinin HTTP üzerinden de gönderilmesine izin verir; yalnızca yerel geliştirme için | false |
-| `PANEL_TRUST_PROXY_HEADERS` | Panel isteklerinde istemci IP'sini `X-Forwarded-For` başlığından alır; panel vekil arkasındaysa açın | false |
+| `PANEL_INSECURE_COOKIE` | Panel çerezinin HTTP üzerinden de gönderilmesine izin verir; Caddy arkasında kapalı kalmalı | false |
+| `PANEL_TRUST_PROXY_HEADERS` | Panel isteklerinde istemci IP'sini `X-Forwarded-For` başlığının son değerinden alır; panel Caddy arkasındayken açık olmalı | Compose'da true (programda false) |
+| `KANALVO_PANEL_BIND` | Panelin düz HTTP portunun (8002) bağlandığı adres | 127.0.0.1 |
+| `KANALVO_HTTP_PORT`, `KANALVO_HTTPS_PORT` | Caddy'nin dış portları | 80, 443 |
 
 `.env.example` içindeki değerler yalnızca yerel geliştirme içindir; sunucuda `TOKEN_KEY` ve
 `HOOK_SECRET` için yeni rastgele değerler üretin ve `EDGE_*` adreslerini dış alan adınıza göre ayarlayın.

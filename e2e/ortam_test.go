@@ -13,12 +13,17 @@ import (
 // geliştirme ortamıdır. e2e/sim.sh ortamı ayrı bir Compose projesinde ve ayrı portlarda kurar ve bu
 // değişkenleri testlere aktarır (bkz. docs/simulasyon.md).
 var (
-	project   = envOr("COMPOSE_PROJECT_NAME", "kanalvo")
-	apiPort   = envOr("KANALVO_API_PORT", "8000")
-	apiURL    = "http://localhost:" + apiPort                             // Xtream uçları ve HLS geçidi
-	tsURL     = "http://localhost:" + envOr("KANALVO_TS_PORT", "8081")    // kesintisiz .ts veren SRS
-	panelURL  = "http://localhost:" + envOr("KANALVO_PANEL_PORT", "8002") // yönetim paneli
-	originURL = "http://localhost:8080"                                   // origin SRS'in HTTP portu; dışarıya açık olmamalı
+	project = envOr("COMPOSE_PROJECT_NAME", "kanalvo")
+	apiPort = envOr("KANALVO_API_PORT", "8000")
+	apiURL  = "http://localhost:" + apiPort                          // Xtream uçları ve HLS geçidi
+	tsURL   = "http://localhost:" + envOr("KANALVO_TS_PORT", "8081") // kesintisiz .ts veren SRS
+	// Yönetim paneli yalnızca Caddy'den, HTTPS ile sunulur (PANEL_DOMAIN=localhost, Caddy'nin iç CA'sı).
+	panelURL = "https://localhost:" + envOr("KANALVO_HTTPS_PORT", "443")
+	// Caddy'nin HTTP portu: ACME doğrulaması ve HTTPS'e yönlendirme.
+	caddyHTTPURL = "http://localhost:" + envOr("KANALVO_HTTP_PORT", "80")
+	// api'nin düz HTTP panel portu; yalnızca 127.0.0.1'e bağlı olmalı.
+	panelPort = envOr("KANALVO_PANEL_PORT", "8002")
+	originURL = "http://localhost:8080" // origin SRS'in HTTP portu; dışarıya açık olmamalı
 
 	// Ana sunucunun Compose ağı; uzak edge "ikinci sunucu" olarak buna bağlanır.
 	network = project + "_default"

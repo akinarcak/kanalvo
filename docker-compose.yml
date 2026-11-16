@@ -32,8 +32,10 @@ services:
       HOOK_SECRET: ${HOOK_SECRET}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
       INGEST_BASE_URL: ${INGEST_BASE_URL}
+      # Panel yalnızca caddy servisinin arkasından, HTTPS ile sunulur: çerez Secure'dur ve istemcinin
+      # adresi Caddy'nin yazdığı X-Forwarded-For'dan okunur (bkz. deploy/caddy/Caddyfile).
       PANEL_INSECURE_COOKIE: ${PANEL_INSECURE_COOKIE:-false}
-      PANEL_TRUST_PROXY_HEADERS: ${PANEL_TRUST_PROXY_HEADERS:-false}
+      PANEL_TRUST_PROXY_HEADERS: ${PANEL_TRUST_PROXY_HEADERS:-true}
       PANEL_SESSION_TTL: ${PANEL_SESSION_TTL:-12h}
       LOGIN_MAX_FAILURES: ${LOGIN_MAX_FAILURES:-20}
       LOGIN_FAILURE_WINDOW: ${LOGIN_FAILURE_WINDOW:-5m}
@@ -47,9 +49,35 @@ services:
         condition: service_healthy
     ports:
       - "${KANALVO_API_PORT:-8000}:8000"
-      - "${KANALVO_PANEL_PORT:-8002}:8002"
+      # Panel dışarıya yalnızca caddy'den (HTTPS) açılır. Düz HTTP portu yalnızca bu makineden
+      # erişilir (arayüz geliştirme sunucusu, yerel denetim).
+      - "${KANALVO_PANEL_BIND:-127.0.0.1}:${KANALVO_PANEL_PORT:-8002}:8002"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8000/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Panelin HTTPS'li ters vekili. PANEL_DOMAIN gerçek bir alan adıysa sertifikayı ACME ile alır;
+  # verilmezse localhost ve Caddy'nin iç CA'sı kullanılır (bkz. deploy/caddy/Caddyfile).
+  caddy:
+    image: caddy:2.11.1-alpine
+    environment:
+      PANEL_DOMAIN: ${PANEL_DOMAIN:-localhost}
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      # 80: ACME doğrulaması ve HTTPS'e yönlendirme; 443: panel.
+      - "${KANALVO_HTTP_PORT:-80}:80"
+      - "${KANALVO_HTTPS_PORT:-443}:443"
+    healthcheck:
+      # Yalnızca Caddy'nin ayakta olduğuna bakar; ACME sertifikasının gecikmesi kurulumu bekletmez.
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:2019/config/"]
       interval: 2s
       timeout: 3s
       retries: 30
@@ -88,3 +116,5 @@ services:
 
 volumes:
   pgdata:
+  caddy_data:
+  caddy_config:

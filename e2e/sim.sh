@@ -19,12 +19,21 @@ export KANALVO_PANEL_PORT="${KANALVO_PANEL_PORT:-18002}"
 export KANALVO_TS_PORT="${KANALVO_TS_PORT:-18081}"
 export KANALVO_RTMP_PORT="${KANALVO_RTMP_PORT:-11935}"
 export KANALVO_PG_PORT="${KANALVO_PG_PORT:-15432}"
+export KANALVO_HTTP_PORT="${KANALVO_HTTP_PORT:-18880}"
+export KANALVO_HTTPS_PORT="${KANALVO_HTTPS_PORT:-18443}"
 export EDGE_PORT="${EDGE_PORT:-18090}"
 # İzleyiciye ve yayıncıya verilen adresler portlara göre üretilir (.env'deki değerlerin yerine geçer).
 export PUBLIC_BASE_URL="http://localhost:${KANALVO_API_PORT}"
 export EDGE_TS_BASE_URL="http://localhost:${KANALVO_TS_PORT}"
 export EDGE_HLS_BASE_URL="http://localhost:${KANALVO_API_PORT}"
 export INGEST_BASE_URL="rtmp://localhost:${KANALVO_RTMP_PORT}/live"
+# Panel, Caddy'nin arkasında HTTPS ile (iç CA) sunulur; .env eski bir örnekten kopyalandıysa bile
+# çerez Secure kalır ve istemci adresi Caddy'nin X-Forwarded-For başlığından okunur.
+export PANEL_DOMAIN=localhost
+export PANEL_INSECURE_COOKIE=false
+export PANEL_TRUST_PROXY_HEADERS=true
+# Hatalı giriş kilidi tasarımdaki eşikle (20) sınanır; .env'deki yerel değerin yerine geçer.
+export LOGIN_MAX_FAILURES="${SIM_LOGIN_MAX_FAILURES:-20}"
 
 edge_project="${COMPOSE_PROJECT_NAME}-edge"
 
