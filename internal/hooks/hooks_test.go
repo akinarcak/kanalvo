@@ -28,6 +28,7 @@ type fixture struct {
 	signer  *token.Signer
 	mux     *http.ServeMux
 	srs     *sessiontest.FakeSRS
+	manager *session.Manager
 	tenant  int64
 	channel int64
 	viewer  int64
@@ -48,9 +49,9 @@ func setup(t *testing.T) *fixture {
 	f.channel = must(f.store.CreateChannel(ctx, f.tenant, "c", "sek"))
 	f.viewer = must(f.store.CreateViewer(ctx, f.tenant, "ali", "pw", 1))
 	f.srs = &sessiontest.FakeSRS{}
-	sessions := session.New(f.store, sessiontest.For(f.srs), f.srs, 30*time.Second, 6*time.Hour)
+	f.manager = session.New(f.store, sessiontest.For(f.srs), f.srs, 30*time.Second, 6*time.Hour)
 	f.local = testdb.LocalEdge(t)
-	h := hooks.New(f.store, f.signer, sessions, balancer.New(f.store, 15*time.Second, 0), func() time.Time { return now })
+	h := hooks.New(f.store, f.signer, f.manager, balancer.New(f.store, 15*time.Second, 0), func() time.Time { return now })
 	h.Register(f.mux, hookSecret, f.local)
 	h.RegisterEdge(f.mux)
 	return f
@@ -375,5 +376,30 @@ func TestStopIsAccepted(t *testing.T) {
 	f := setup(t)
 	if code := f.post(hookSecret, "stop", event("p1", "live", fmt.Sprint(f.channel), "")); code != http.StatusOK {
 		t.Fatalf("durum %d", code)
+	}
+}
+
+// İmza yalnızca izleme başlarken doğrulanır: başlamış bir .ts izlemesi imzanın süresi dolunca
+// kesilmez (§6). Testin saati (now) gerçek saatten geridedir; denetim geçişi gerçek saatle
+// çalıştığında imzanın süresi çoktan dolmuştur.
+func TestStartedPlaybackOutlivesItsToken(t *testing.T) {
+	f := setup(t)
+	f.publish("a", "?secret=sek")
+	tok := f.tokenFor(f.viewer, f.channel, now.Add(time.Second))
+	if code := f.playAs("p1", fmt.Sprint(f.channel), tok); code != http.StatusOK {
+		t.Fatalf("izleme kabul edilmeliydi: %d", code)
+	}
+	if _, err := f.signer.Verify(strings.TrimPrefix(tok, "?token="), time.Now()); err == nil {
+		t.Fatal("testin anlamı için imzanın süresi gerçek saatte dolmuş olmalı")
+	}
+	f.srs.Clients = []string{"p1"}
+	if err := f.manager.EnforceOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if f.srs.Kicked() != "[]" {
+		t.Fatalf("süresi dolan imza süren izlemeyi kesmemeli: %s", f.srs.Kicked())
+	}
+	if n := f.sessions(f.viewer); n != 1 {
+		t.Fatalf("oturum sürmeli: %d", n)
 	}
 }

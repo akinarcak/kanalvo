@@ -97,6 +97,9 @@ func TestEdgeAuthAppliesTheSameRulesAsTheLocalGateway(t *testing.T) {
 	check("süresi dolmuş imza", "/edge/hls/"+f.token(f.viewer, f.channel, now.Add(-time.Second))+"/1.m3u8", http.StatusForbidden)
 	check("başka kanalın dosyası", "/edge/hls/"+f.valid()+"/2.m3u8", http.StatusForbidden)
 	check("bilinmeyen dosya adı", "/edge/hls/"+f.valid()+"/index.html", http.StatusNotFound)
+	t2 := must(f.store.CreateTenant(ctx, "t2"))
+	v2 := must(f.store.CreateViewer(ctx, t2, "veli", "pw", 1))
+	check("başka yayıncının izleyicisi", "/edge/hls/"+f.token(v2, f.channel, now.Add(time.Hour))+"/1.m3u8", http.StatusForbidden)
 
 	// Limit 1: adresi paylaşan ikinci kişi ilkini düşürür; düşen oturum edge'den de geri dönemez.
 	first := f.session(f.viewer, f.channel, "b1", now.Add(time.Hour))
@@ -113,6 +116,27 @@ func TestEdgeAuthAppliesTheSameRulesAsTheLocalGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	check("çevrimdışı kanal", "/edge/hls/"+second+"/1.m3u8", http.StatusNotFound)
+}
+
+// Silinen edge'in anahtarı tanınmaz: HLS yetki ve dosya uçları reddeder (§7 "Edge silindi").
+func TestDeletedEdgeKeyIsRejected(t *testing.T) {
+	f := setup(t)
+	id := f.addEdge()
+	path := "/edge/hls/" + f.valid() + "/1.m3u8"
+	if rec := f.edgeGet(path, edgeKey, "203.0.113.7"); rec.Code != http.StatusOK {
+		t.Fatalf("silinmeden önce: %d", rec.Code)
+	}
+	if err := f.store.DeleteEdge(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{path, "/edge/segment/1.m3u8", "/edge/segment/1-9.ts"} {
+		if rec := f.edgeGet(p, edgeKey, "203.0.113.7"); rec.Code != http.StatusForbidden || rec.Header().Get("X-Accel-Redirect") != "" {
+			t.Errorf("silinen edge'in anahtarıyla %s: durum %d", p, rec.Code)
+		}
+	}
+	if hits := f.upstreamHits(); len(hits) != 0 {
+		t.Fatalf("silinen edge'in isteği SRS'e ulaştı: %v", hits)
+	}
 }
 
 // Edge'in bildirdiği izleyici adresi oturumun ağıdır: aynı adres başka bir ağdan kullanılınca

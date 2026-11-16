@@ -210,9 +210,9 @@ kanalları çevrimdışı yapar; SRS'e ulaşılamazsa hiçbir kanala dokunmaz.
   imza süresi (varsayılan 6 saat) dolunca oynatıcının adresi yeniden
   istemesini gerektirir.
 - İmzalı adres geçerlilik süresi içinde paylaşılabilir; bağlantı limiti bunu
-  sınırlar. HLS adresinin ömrü uzun olduğu için bu sınır HLS'te daha önemlidir
-  ve bağlantı limiti gelene kadar (Plan 3) açıktır. IP'ye bağlama seçeneği
-  sonraya bırakılmıştır.
+  sınırlar. HLS adresinin ömrü uzun olduğu için bu sınır HLS'te daha önemlidir;
+  ayrıca bir HLS adresi aynı anda tek bir ağdan kullanılabilir (bkz. §7). Tam
+  IP'ye bağlama seçeneği sonraya bırakılmıştır.
 - Origin SRS'in HTTP portu dışarıya açılmaz; HLS yalnızca geçitten verilir.
 - İmza hangi yol için üretildiğini taşır (`.ts` veya HLS); uzun ömürlü HLS
   imzası `.ts` ve RTMP izlemesinde geçmez.

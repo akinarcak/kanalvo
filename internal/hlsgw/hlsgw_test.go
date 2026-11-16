@@ -232,10 +232,10 @@ func TestSharedLinkFromAnotherAddressTakesTheOnlySlot(t *testing.T) {
 		t.Fatalf("durum %d", code)
 	}
 	if code := f.getFrom("2.2.2.2:1000", link, "1.m3u8"); code != http.StatusOK {
-		t.Fatalf("başka adresten açılan aynı adres ayrı bağlantı sayılır ve kabul edilir: durum %d", code)
+		t.Fatalf("başka ağdan açılan adres oturumu oraya taşımalı ve kabul edilmeli: durum %d", code)
 	}
 	if code := f.getFrom("1.1.1.1:2000", link, "1.m3u8"); code != http.StatusForbidden {
-		t.Fatalf("limit 1 iken ilk adres yerinden edilmiş olmalı: durum %d", code)
+		t.Fatalf("oturum taşındıktan sonra eski ağdan istek reddedilmeli: durum %d", code)
 	}
 }
 
