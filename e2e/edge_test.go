@@ -15,19 +15,13 @@ import (
 	"time"
 )
 
-const (
-	edgeURL  = "http://localhost:8090" // ikinci sunucunun izleyicilere açık adresi
-	edgePort = "8090"
-	edgeSRS  = "kanalvo-edge-edge-srs-1"
-)
-
 // edgeCompose, uzak edge'in Compose projesini ana sunucunun ağına bağlı olarak yönetir.
 func edgeCompose(t *testing.T, env []string, args ...string) {
 	t.Helper()
-	full := append([]string{"compose", "-f", "deploy/edge/docker-compose.yml", "-f", "deploy/edge/docker-compose.e2e.yml"}, args...)
+	full := append([]string{"compose", "-p", edgeProject, "-f", "deploy/edge/docker-compose.yml", "-f", "deploy/edge/docker-compose.e2e.yml"}, args...)
 	cmd := exec.Command("docker", full...)
 	cmd.Dir = ".."
-	cmd.Env = append(os.Environ(), env...)
+	cmd.Env = append(os.Environ(), append([]string{"KANALVO_NETWORK=" + network}, env...)...)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	if err := cmd.Run(); err != nil {
@@ -102,6 +96,74 @@ func dockerValue(t *testing.T, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// startRemoteEdge, ikinci sunucuyu panelden kaydeder ve deploy/edge dosyalarıyla ayrı bir Compose
+// projesi olarak başlatır. pullIP boşsa çekme adresi kapsayıcının adresi olur; değilse verilen
+// (yanlış) adres kaydedilir. Test bitince edge kaldırılır ve kaydı silinir.
+func startRemoteEdge(t *testing.T, admin *panelClient, pullIP string) (edge edgeInfo, edgePath string, env []string) {
+	t.Helper()
+	initialPull := pullIP
+	if initialPull == "" {
+		initialPull = "192.0.2.1"
+	}
+	admin.call("POST", "/api/admin/edges", map[string]any{
+		"name": fmt.Sprintf("e2e-edge-%d", time.Now().UnixNano()), "base_url": edgeURL, "control_url": "http://edge-nginx", "pull_ip": initialPull,
+	}, &edge, http.StatusCreated)
+	edgePath = fmt.Sprintf("/api/admin/edges/%d", edge.ID)
+	var key string
+	for _, line := range strings.Split(edge.Setup, "\n") {
+		if v, ok := strings.CutPrefix(line, "EDGE_KEY="); ok {
+			key = v
+		}
+	}
+	if key == "" {
+		t.Fatalf("kurulum bilgisinde edge anahtarı yok: %q", edge.Setup)
+	}
+	// E2E_EDGE_CONTROL_URL: edge'in ana sunucuya başka bir adresten (ör. HTTPS sunan bir vekil
+	// üzerinden) bağlanmasını denemek içindir.
+	controlURL := os.Getenv("E2E_EDGE_CONTROL_URL")
+	if controlURL == "" {
+		controlURL = "http://api:8000"
+	}
+	env = []string{"CONTROL_URL=" + controlURL, "EDGE_KEY=" + key, "ORIGIN_RTMP=srs:1935", "EDGE_PORT=" + edgePort}
+	t.Cleanup(func() {
+		edgeCompose(t, env, "down", "-t", "2")
+		// Kayıt kalırsa sonraki testlerin izleyicileri olmayan bir sunucuya yönlendirilebilir.
+		req, _ := http.NewRequest(http.MethodDelete, panelURL+edgePath, nil)
+		req.Header.Set("X-Kanalvo-Panel", "1")
+		if resp, err := admin.http.Do(req); err == nil {
+			resp.Body.Close()
+		}
+	})
+	edgeCompose(t, env, "up", "-d")
+	if pullIP == "" {
+		ip := dockerValue(t, "inspect", "-f", fmt.Sprintf(`{{(index .NetworkSettings.Networks %q).IPAddress}}`, network), edgeSRS)
+		admin.call("PATCH", edgePath, map[string]any{"pull_ip": ip}, nil, http.StatusOK)
+	}
+	return edge, edgePath, env
+}
+
+// originHasClient, origin SRS'in bağlantı listesinde verilen adresten bir bağlantı olup olmadığını
+// söyler. Origin'in yönetim API'si dışarıya açık değildir; liste API kapsayıcısının içinden alınır.
+func originHasClient(t *testing.T, ip string) bool {
+	t.Helper()
+	out := compose(t, "exec", "-T", "api", "wget", "-qO-", "http://srs:1985/api/v1/clients/?count=1000")
+	var list struct {
+		Clients []struct {
+			IP   string `json:"ip"`
+			Type string `json:"type"`
+		} `json:"clients"`
+	}
+	if err := json.Unmarshal(out, &list); err != nil {
+		t.Fatalf("origin bağlantı listesi çözülemedi: %v", err)
+	}
+	for _, c := range list.Clients {
+		if c.IP == ip {
+			return true
+		}
+	}
+	return false
+}
+
 // İkinci bir sunucu edge olarak kaydedildiğinde izleyiciler iki sunucuya dağılmalı; edge'den hem
 // .ts hem HLS izlenebilmeli; edge durduğunda izleyiciler yerel sunucuya dönmeli.
 func TestSecondServerSharesTheViewers(t *testing.T) {
@@ -151,48 +213,12 @@ func TestSecondServerSharesTheViewers(t *testing.T) {
 	localPath := fmt.Sprintf("/api/admin/edges/%d", local.ID)
 	t.Cleanup(func() { admin.call("PATCH", localPath, map[string]any{"enabled": true}, nil, http.StatusOK) })
 
-	// İkinci sunucuyu kaydet. Çekme adresi kapsayıcı başlayınca belli olur.
-	var edge edgeInfo
-	admin.call("POST", "/api/admin/edges", map[string]any{
-		"name": fmt.Sprintf("e2e-edge-%d", stamp), "base_url": edgeURL, "control_url": "http://edge-nginx", "pull_ip": "192.0.2.1",
-	}, &edge, http.StatusCreated)
-	edgePath := fmt.Sprintf("/api/admin/edges/%d", edge.ID)
-	var key string
-	for _, line := range strings.Split(edge.Setup, "\n") {
-		if v, ok := strings.CutPrefix(line, "EDGE_KEY="); ok {
-			key = v
-		}
-	}
-	if key == "" {
-		t.Fatalf("kurulum bilgisinde edge anahtarı yok: %q", edge.Setup)
-	}
-	// E2E_EDGE_CONTROL_URL: edge'in ana sunucuya başka bir adresten (ör. HTTPS sunan bir vekil
-	// üzerinden) bağlanmasını denemek içindir.
-	controlURL := os.Getenv("E2E_EDGE_CONTROL_URL")
-	if controlURL == "" {
-		controlURL = "http://api:8000"
-	}
-	env := []string{"CONTROL_URL=" + controlURL, "EDGE_KEY=" + key, "ORIGIN_RTMP=srs:1935", "EDGE_PORT=" + edgePort}
-	t.Cleanup(func() {
-		edgeCompose(t, env, "down", "-t", "2")
-		// Kayıt kalırsa sonraki testlerin izleyicileri olmayan bir sunucuya yönlendirilebilir.
-		req, _ := http.NewRequest(http.MethodDelete, panelURL+edgePath, nil)
-		req.Header.Set("X-Kanalvo-Panel", "1")
-		if resp, err := admin.http.Do(req); err == nil {
-			resp.Body.Close()
-		}
-	})
-	edgeCompose(t, env, "up", "-d")
-
+	edge, edgePath, env := startRemoteEdge(t, admin, "192.0.2.1")
+	stopEdge := func() { edgeCompose(t, env, "stop", "-t", "2") }
 	waitFor(t, "edge'in sağlık sinyali vermesi", 40*time.Second, func() bool { return edgeByID(admin, edge.ID).Healthy })
 
 	// Yayını başlat.
-	const publisher = "kanalvo-e2e-edge-pub"
-	compose(t, "--profile", "e2e", "run", "-d", "--rm", "--name", publisher, "ffmpeg",
-		"-re", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=25", "-f", "lavfi", "-i", "sine=frequency=440",
-		"-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-g", "50", "-pix_fmt", "yuv420p",
-		"-c:a", "aac", "-f", "flv", "rtmp://srs/live/"+channel.StreamKey)
-	t.Cleanup(func() { stopContainer(publisher) })
+	publish(t, project+"-e2e-edge-pub", channel.StreamKey, "320x180")
 	waitFor(t, "kanalın yayında görünmesi", 30*time.Second, func() bool {
 		code, _ := probe(t, playURL("ts"))
 		return code == http.StatusFound
@@ -220,7 +246,7 @@ func TestSecondServerSharesTheViewers(t *testing.T) {
 			t.Fatalf("çekme adresi kayıtlı olmayan edge origin'den yayın alabildi (%d. deneme)", i+1)
 		}
 	}
-	pullIP := dockerValue(t, "inspect", "-f", `{{(index .NetworkSettings.Networks "kanalvo_default").IPAddress}}`, edgeSRS)
+	pullIP := dockerValue(t, "inspect", "-f", fmt.Sprintf(`{{(index .NetworkSettings.Networks %q).IPAddress}}`, network), edgeSRS)
 	admin.call("PATCH", edgePath, map[string]any{"pull_ip": pullIP}, nil, http.StatusOK)
 
 	// 3. Edge'den kesintisiz .ts.
@@ -247,7 +273,7 @@ func TestSecondServerSharesTheViewers(t *testing.T) {
 	// nginx isteği bitince kaydeder: süren izleme henüz kayıtta yoktur, okunan satır 3. adımdaki
 	// tamamlanmış .ts isteğine aittir (aynı test sürecinden, yani aynı adresten).
 	viewerIP := ""
-	for _, line := range strings.Split(dockerValue(t, "logs", "--tail", "200", "kanalvo-edge-edge-nginx-1"), "\n") {
+	for _, line := range strings.Split(dockerValue(t, "logs", "--tail", "200", edgeNginx), "\n") {
 		if ip, rest, found := strings.Cut(line, " "); found && strings.Contains(rest, fmt.Sprintf(`"GET /live/%d.ts?`, channel.ID)) {
 			viewerIP = ip
 		}
@@ -270,6 +296,11 @@ func TestSecondServerSharesTheViewers(t *testing.T) {
 	})
 	if n := edgeByID(admin, edge.ID).ActiveSessions; n < 1 {
 		t.Fatalf("edge'in izleme sayısı: %d", n)
+	}
+
+	// Edge yayını ilk izleyiciyle origin'den çekmiştir: origin'in bağlantı listesinde edge'in adresi görünür.
+	if !originHasClient(t, pullIP) {
+		t.Fatal("izleme sürerken edge'in origin'e çekme bağlantısı görünmeli")
 	}
 
 	// 5. Edge'den HLS: çalma listesi ve parça edge'in adresinden gelir.
@@ -340,9 +371,11 @@ func TestSecondServerSharesTheViewers(t *testing.T) {
 		t.Fatalf("askıdaki izleyicinin edge'deki HLS isteği 403 almalı: %d", code)
 	}
 	owner.call("PATCH", viewerPath, map[string]any{"status": "active"}, nil, http.StatusOK)
+	// Son .ts izleyicisi gidince edge çekmeyi bırakır (HLS edge'in SRS'inden geçmez).
+	waitFor(t, "edge'in origin'den çekmeyi bırakması", 30*time.Second, func() bool { return !originHasClient(t, pullIP) })
 
 	// 8. Edge durunca sağlık sinyali kesilir; başka sunucu yoksa 503, yerel sunucu dönünce izleyiciler ona gider.
-	edgeCompose(t, env, "stop", "-t", "2")
+	stopEdge()
 	waitFor(t, "duran edge'in sağlıksız görünmesi", 40*time.Second, func() bool { return !edgeByID(admin, edge.ID).Healthy })
 	waitFor(t, "sunucu kalmadığında 503", 15*time.Second, func() bool {
 		code, _ := probe(t, playURL("ts"))

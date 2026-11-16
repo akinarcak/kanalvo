@@ -199,8 +199,14 @@ func TestOtherTenantChannelLooksMissing(t *testing.T) {
 	t2 := must(f.store.CreateTenant(ctx, "t2"))
 	other := must(f.store.CreateChannel(ctx, t2, "c2", "s2"))
 	must(f.store.MarkLive(ctx, other, "z"))
-	if rec := f.get(f.path("ali", "pw", fmt.Sprintf("%d.ts", other))); rec.Code != http.StatusNotFound {
-		t.Fatalf("durum %d", rec.Code)
+	for _, p := range []string{
+		f.path("ali", "pw", fmt.Sprintf("%d.ts", other)),
+		f.path("ali", "pw", fmt.Sprintf("%d.m3u8", other)),
+		fmt.Sprintf("/ali/pw/%d", other), // kısa biçim
+	} {
+		if rec := f.get(p); rec.Code != http.StatusNotFound {
+			t.Errorf("%s: durum %d", p, rec.Code)
+		}
 	}
 }
 
@@ -209,8 +215,10 @@ func TestOfflineChannelIsNotFound(t *testing.T) {
 	if err := f.store.MarkOffline(context.Background(), f.channel, "a"); err != nil {
 		t.Fatal(err)
 	}
-	if rec := f.get(f.path("ali", "pw", fmt.Sprintf("%d.ts", f.channel))); rec.Code != http.StatusNotFound {
-		t.Fatalf("durum %d", rec.Code)
+	for _, ext := range []string{"ts", "m3u8"} {
+		if rec := f.get(f.path("ali", "pw", fmt.Sprintf("%d.%s", f.channel, ext))); rec.Code != http.StatusNotFound {
+			t.Errorf(".%s: durum %d", ext, rec.Code)
+		}
 	}
 }
 

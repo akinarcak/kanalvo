@@ -1,3 +1,5 @@
+# Proje adı COMPOSE_PROJECT_NAME ile, dış portlar KANALVO_*_PORT değişkenleriyle değiştirilebilir
+# (bkz. docs/simulasyon.md); böylece simülasyon ortamı çalışan bir geliştirme ortamının yanında kalkar.
 name: kanalvo
 
 services:
@@ -11,7 +13,7 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${KANALVO_PG_PORT:-5432}:5432"
     healthcheck:
       # 127.0.0.1: ilk kurulumda veritabanını hazırlayan geçici sunucu ağdan dinlemez; onu "hazır" saymayız.
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U kanalvo -d kanalvo"]
@@ -44,8 +46,8 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "8000:8000"
-      - "8002:8002"
+      - "${KANALVO_API_PORT:-8000}:8000"
+      - "${KANALVO_PANEL_PORT:-8002}:8002"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8000/healthz"]
       interval: 2s
@@ -65,7 +67,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "1935:1935"
+      - "${KANALVO_RTMP_PORT:-1935}:1935"
 
   srs-ts:
     image: ossrs/srs:5
@@ -78,7 +80,7 @@ services:
       - -c
       - sed "s|__HOOK_BASE__|$$HOOK_BASE|g" /conf/srs.conf.tmpl > /tmp/srs.conf && exec ./objs/srs -c /tmp/srs.conf
     ports:
-      - "8081:8080"
+      - "${KANALVO_TS_PORT:-8081}:8080"
 
   ffmpeg:
     image: jrottenberg/ffmpeg:6.1-alpine

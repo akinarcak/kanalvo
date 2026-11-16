@@ -10,18 +10,10 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
-)
-
-const (
-	apiURL    = "http://localhost:8000" // Xtream uçları ve HLS geçidi
-	tsURL     = "http://localhost:8081" // kesintisiz .ts veren SRS
-	originURL = "http://localhost:8080" // origin SRS'in HTTP portu; dışarıya açık olmamalı
-	pubName   = "kanalvo-e2e-pub"
 )
 
 type seed struct {
@@ -59,22 +51,6 @@ func rtmpPlay(channelID int64, query string) error {
 	return cmd.Run()
 }
 
-// envValue, ../.env dosyasından bir değeri okur.
-func envValue(t *testing.T, key string) string {
-	t.Helper()
-	data, err := os.ReadFile("../.env")
-	if err != nil {
-		t.Fatalf(".env okunamadı: %v", err)
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if v, ok := strings.CutPrefix(strings.TrimSpace(line), key+"="); ok {
-			return v
-		}
-	}
-	t.Fatalf(".env içinde %s yok", key)
-	return ""
-}
-
 // getJSON, adresi çağırır ve 200 yanıtının JSON gövdesini v içine çözer.
 func getJSON(t *testing.T, u string, v any) {
 	t.Helper()
@@ -107,15 +83,10 @@ func (s seed) xtreamURL(script, extra string) string {
 	return fmt.Sprintf("%s/%s?username=%s&password=%s%s", apiURL, script, s.Username, s.Password, extra)
 }
 
-// startPublisher, kanala FFmpeg kapsayıcısından sahte bir yayın başlatır.
+// startPublisher, seed-dev kanalına sahte bir yayın başlatır.
 func startPublisher(t *testing.T, s seed) {
 	t.Helper()
-	compose(t, "--profile", "e2e", "run", "-d", "--rm", "--name", pubName, "ffmpeg",
-		"-re", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=25",
-		"-f", "lavfi", "-i", "sine=frequency=440",
-		"-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-g", "50", "-pix_fmt", "yuv420p",
-		"-c:a", "aac", "-f", "flv",
-		fmt.Sprintf("rtmp://srs/live/%d?secret=%s", s.ChannelID, s.StreamSecret))
+	publish(t, pubName, fmt.Sprintf("%d?secret=%s", s.ChannelID, s.StreamSecret), "640x360")
 }
 
 func publisherRunning() bool { return containerRunning(pubName) }
@@ -124,8 +95,6 @@ func containerRunning(name string) bool {
 	out, _ := exec.Command("docker", "ps", "-q", "--filter", "name="+name).Output()
 	return strings.TrimSpace(string(out)) != ""
 }
-
-func stopContainer(name string) { exec.Command("docker", "rm", "-f", name).Run() }
 
 // watch, bir .ts yayınını bağlantı kopana kadar okur. started, ilk veri gelince; ended,
 // bağlantı sunucu tarafından kesilince kapanır.
@@ -227,7 +196,6 @@ func TestSingleChannelEndToEnd(t *testing.T) {
 	}
 
 	startPublisher(t, s)
-	t.Cleanup(func() { exec.Command("docker", "rm", "-f", pubName).Run() })
 
 	// Kesintisiz .ts
 	var tsLocation string
@@ -247,7 +215,7 @@ func TestSingleChannelEndToEnd(t *testing.T) {
 	// Bir IPTV oynatıcısının yaptığı gibi: giriş, kanal listesi, M3U ve listedeki adresten izleme.
 	var account xtreamAccount
 	getJSON(t, s.xtreamURL("player_api.php", ""), &account)
-	if account.UserInfo.Auth != 1 || account.UserInfo.Status != "Active" || account.ServerInfo.URL != "localhost" || account.ServerInfo.Port != "8000" {
+	if account.UserInfo.Auth != 1 || account.UserInfo.Status != "Active" || account.ServerInfo.URL != "localhost" || account.ServerInfo.Port != apiPort {
 		t.Fatalf("beklenmeyen giriş yanıtı: %+v", account)
 	}
 	var streams []struct {

@@ -83,6 +83,40 @@ func TestOriginPlayIsAllowedOnlyFromARegisteredEdgeAddress(t *testing.T) {
 	if code := pull("10.0.0.5", valid); code != http.StatusForbidden {
 		t.Fatalf("devre dışı edge origin'den çekebildi: %d", code)
 	}
+	deleted := f.addEdge("e2", "10.0.0.7")
+	if code := f.post(hookSecret, "play-origin", eventFrom("10.0.0.7", "cek-2", stream, valid)); code != http.StatusOK {
+		t.Fatalf("ikinci edge'in çekmesi kabul edilmeliydi: %d", code)
+	}
+	if err := f.store.DeleteEdge(context.Background(), deleted); err != nil {
+		t.Fatal(err)
+	}
+	if code := f.post(hookSecret, "play-origin", eventFrom("10.0.0.7", "cek-3", stream, valid)); code != http.StatusForbidden {
+		t.Fatalf("silinen edge origin'den çekebildi: %d", code)
+	}
+}
+
+// Silinen edge'in anahtarı tanınmaz: yeni izleme yetkilendirilemez (§7 "Edge silindi").
+func TestDeletedEdgeCannotAuthorizeNewPlayback(t *testing.T) {
+	f := setup(t)
+	f.publish("a", "?secret=sek")
+	id := f.addEdge("e1", "10.0.0.5")
+	stream := fmt.Sprint(f.channel)
+	valid := f.tokenFor(f.viewer, f.channel, now.Add(time.Minute))
+	if code := f.edgePost("key-e1", "play", event("p1", "live", stream, valid)); code != http.StatusOK {
+		t.Fatalf("silinmeden önce izleme kabul edilmeliydi: %d", code)
+	}
+	if err := f.store.DeleteEdge(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.sessions(f.viewer); n != 0 {
+		t.Fatalf("silinen edge'in oturumu kalmamalı: %d", n)
+	}
+	if code := f.edgePost("key-e1", "play", event("p2", "live", stream, valid)); code != http.StatusNotFound {
+		t.Fatalf("silinen edge'in anahtarıyla izleme sorgusu: durum %d, beklenen 404", code)
+	}
+	if n := f.sessions(f.viewer); n != 0 {
+		t.Fatalf("silinen edge'in anahtarıyla oturum açıldı: %d", n)
+	}
 }
 
 func TestEdgeHooksRequireAValidEdgeKey(t *testing.T) {
@@ -165,5 +199,14 @@ func TestEdgePlayAppliesTheSameRulesAsLocal(t *testing.T) {
 	}
 	if code := f.edgePost("key-e1", "play", event("p1", "live", stream, f.tokenFor(f.viewer, f.channel, now.Add(time.Minute)))); code != http.StatusForbidden {
 		t.Fatalf("askıdaki izleyici edge'den izleyebildi: %d", code)
+	}
+	// Başka yayıncının izleyicisinin imzası bu kanalda geçmez (kiracı ayrımı edge yolunda da).
+	t2 := must(f.store.CreateTenant(context.Background(), "t2"))
+	v2 := must(f.store.CreateViewer(context.Background(), t2, "veli", "pw", 1))
+	if code := f.edgePost("key-e1", "play", event("p2", "live", stream, f.tokenFor(v2, f.channel, now.Add(time.Minute)))); code != http.StatusForbidden {
+		t.Fatalf("başka yayıncının izleyicisi edge'den izleyebildi: %d", code)
+	}
+	if n := f.sessions(v2); n != 0 {
+		t.Fatalf("başka yayıncının izleyicisine oturum açıldı: %d", n)
 	}
 }

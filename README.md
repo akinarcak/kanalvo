@@ -200,12 +200,21 @@ go test -p 1 ./...
 
 Paketler aynı test veritabanını paylaştığı için `-p 1` gereklidir.
 
-Uçtan uca test (tüm servisler çalışırken; sahte yayını FFmpeg kapsayıcısı gönderir):
+Uçtan uca testler simülasyon ortamında koşar: OBS yerine FFmpeg sahte yayın gönderir, Xtream
+oynatıcısı yerine testteki istemci `player_api.php`/`get.php`/`/live` uçlarını çağırıp görüntüyü
+ffprobe ile çözer, ikinci sunucu aynı makinede ayrı bir Compose projesi olarak kalkar. Tek komut:
+
+```bash
+e2e/sim.sh
+```
+
+Betik ortamı ayrı bir Compose projesinde (`kanalvo-sim`) ve ayrı portlarda kurar, bütün senaryoları
+koşar ve sonunda kaldırır; çalışan bir geliştirme ortamına dokunmaz. Senaryolar, portlar ve tek
+senaryo koşma: `docs/simulasyon.md`. Tasarımın koda ve testlere eşlemesi: `docs/ilk-surum-denetimi.md`.
+
+Çalışan bir geliştirme ortamına karşı da koşulabilir:
 
 ```bash
 docker compose up -d --build --wait
 go test -tags e2e -count=1 ./e2e/
 ```
-
-Uçtan uca test, ikinci sunucuyu `deploy/edge` dosyalarıyla aynı makinede ayrı bir Compose projesi
-olarak (8090 portunda) başlatır ve sonunda kaldırır.
