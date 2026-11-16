@@ -155,11 +155,54 @@ func (s *Store) SetViewerExpiry(ctx context.Context, id int64, at *time.Time) er
 }
 
 // MarkLive, kanal çevrimdışıysa yayında olarak işaretler. Kanal zaten yayındaysa false döner.
+//
+// Kanal kotası (max_channels) yayın kabulünde eşzamanlı canlı kanal üst sınırıdır: yayıncının
+// o anda canlı kanal sayısı kotaya eşit ya da fazlaysa ErrQuotaExceeded döner ve kanal çevrimdışı
+// kalır. Hangi kanalın açılacağı seçilmez, ilk gelen açar. Kanal oluşturmadaki kuralla aynı
+// biçimde 0 kota hiç yayına izin vermez. Kota sonradan düşürülürse süren yayınlara dokunulmaz;
+// yalnızca yenileri reddedilir.
+//
+// Yayıncı satırı kilitlenir (bkz. insertWithinQuota); aynı yayıncının eşzamanlı yayın istekleri
+// sırayla değerlendirilir ve kotadan fazlası kabul edilemez. Sayım ayrı bir sorguda yapılır; READ
+// COMMITTED'da kilidi bekleyen istek, önceki işlemin işaretlediği kanalı görür.
 func (s *Store) MarkLive(ctx context.Context, channelID int64, clientID string) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+
+	var limit int
+	if err := tx.QueryRow(ctx, `
+		SELECT t.max_channels FROM tenants t
+		WHERE t.id = (SELECT tenant_id FROM channels WHERE id = $1)
+		FOR UPDATE`, channelID).Scan(&limit); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	var live bool
+	var count int
+	if err := tx.QueryRow(ctx, `
+		SELECT (SELECT live FROM channels WHERE id = $1),
+		       (SELECT count(*) FROM channels WHERE live AND tenant_id = (SELECT tenant_id FROM channels WHERE id = $1))`,
+		channelID).Scan(&live, &count); err != nil {
+		return false, err
+	}
+	if live {
+		return false, nil
+	}
+	if count >= limit {
+		return false, ErrQuotaExceeded
+	}
+	tag, err := tx.Exec(ctx, `
 		UPDATE channels SET live = true, publisher_client_id = $2, last_publish_at = now()
 		WHERE id = $1 AND NOT live`, channelID, clientID)
-	return tag.RowsAffected() == 1, err
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, tx.Commit(ctx)
 }
 
 // MarkOffline, yalnızca yayını açan bağlantının bildirimiyle kanalı çevrimdışı yapar.

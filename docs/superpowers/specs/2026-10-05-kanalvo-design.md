@@ -262,6 +262,8 @@ kanalları çevrimdışı yapar; SRS'e ulaşılamazsa hiçbir kanala dokunmaz.
 | Çok sayıda eşzamanlı panel girişi | Aynı anda sınırlı sayıda şifre doğrulanır; fazlası 503 alır |
 | Yayıncı askıya alındı | Açık yayınları birkaç saniye içinde kesilir, izleyicileri izleyemez |
 | Geçersiz yayın anahtarı veya kota aşımı | SRS yayını reddeder |
+| Yayıncının canlı kanal sayısı kanal kotasında | Yeni yayını SRS reddeder. Kanal kotası yayın kabulünde eşzamanlı canlı kanal üst sınırıdır; hangi kanalın açılacağı seçilmez, ilk gelen açar. Kota 0 ise (kanal oluşturmada olduğu gibi) hiç yayın açılamaz |
+| Kanal kotası düşürüldü | Süren yayınlar kesilmez; canlı kanal sayısı yeni kotanın altına inene kadar yeni yayınlar reddedilir |
 | Aynı kanala ikinci yayın bağlantısı | İkincisi reddedilir |
 
 ## 8. Test

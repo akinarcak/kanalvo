@@ -199,6 +199,110 @@ func TestSecondPublisherRejectedAndCannotTakeChannelOffline(t *testing.T) {
 	}
 }
 
+// publishTo, yayıncının başka bir kanalına SRS'in yayın sorgusunu gönderir.
+func (f *fixture) publishTo(channel int64, client, secret string) int {
+	return f.post(hookSecret, "publish", event(client, "live", fmt.Sprint(channel), "?secret="+secret))
+}
+
+func (f *fixture) unpublishFrom(channel int64, client string) {
+	f.t.Helper()
+	if code := f.post(hookSecret, "unpublish", event(client, "live", fmt.Sprint(channel), "")); code != http.StatusOK {
+		f.t.Fatalf("unpublish: durum %d", code)
+	}
+}
+
+func (f *fixture) setChannelQuota(n int) {
+	f.t.Helper()
+	if err := f.store.SetTenantQuotas(context.Background(), f.tenant, store.Quotas{MaxChannels: n, MaxViewers: 10, MaxConnections: 10}); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *fixture) channelLive(id int64) bool {
+	return must(f.store.ChannelByID(context.Background(), id)).Live
+}
+
+// Tasarım §7: kota aşımında SRS yayını reddeder. Kanal kotası yayın kabulünde eşzamanlı canlı
+// kanal üst sınırıdır; ilk gelen açar, kota düşürülünce süren yayınlar kesilmez.
+func TestPublishRejectedBeyondConcurrentChannelQuota(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	f.setChannelQuota(3)
+	b := must(f.store.CreateChannel(ctx, f.tenant, "b", "sek-b"))
+	c := must(f.store.CreateChannel(ctx, f.tenant, "c", "sek-c"))
+	f.setChannelQuota(2)
+
+	if code := f.publishTo(f.channel, "pa", "sek"); code != http.StatusOK {
+		t.Fatalf("1. yayın: durum %d", code)
+	}
+	if code := f.publishTo(b, "pb", "sek-b"); code != http.StatusOK {
+		t.Fatalf("2. yayın: durum %d", code)
+	}
+	if code := f.publishTo(c, "pc", "sek-c"); code != http.StatusForbidden {
+		t.Fatalf("kota üstü 3. yayın 403 almalı, durum %d", code)
+	}
+	// SRS reddettiği bağlantı için de unpublish gönderir; süren yayınlara dokunmamalı.
+	f.unpublishFrom(c, "pc")
+	if f.channelLive(c) || !f.live() || !f.channelLive(b) {
+		t.Fatal("reddedilen kanal çevrimdışı, süren iki yayın canlı kalmalı")
+	}
+
+	f.unpublishFrom(f.channel, "pa")
+	if code := f.publishTo(c, "pc2", "sek-c"); code != http.StatusOK {
+		t.Fatalf("bir yayın kapanınca 3. kanal açılmalı, durum %d", code)
+	}
+
+	f.setChannelQuota(1)
+	if !f.channelLive(b) || !f.channelLive(c) {
+		t.Fatal("kota düşürülünce süren yayınlar sürmeli")
+	}
+	if code := f.publishTo(f.channel, "pa2", "sek"); code != http.StatusForbidden {
+		t.Fatalf("kota düşürülünce yeni yayın 403 almalı, durum %d", code)
+	}
+}
+
+func TestConcurrentPublishesAcceptOnlyUpToTheChannelQuota(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	const quota, attempts = 2, 6
+	f.setChannelQuota(attempts)
+	channels := []int64{f.channel}
+	secrets := []string{"sek"}
+	for i := 1; i < attempts; i++ {
+		secret := fmt.Sprint("sek-", i)
+		channels = append(channels, must(f.store.CreateChannel(ctx, f.tenant, fmt.Sprint("k", i), secret)))
+		secrets = append(secrets, secret)
+	}
+	f.setChannelQuota(quota)
+
+	codes := make(chan int, attempts)
+	start := make(chan struct{})
+	for i := range channels {
+		go func() {
+			<-start
+			req := httptest.NewRequest(http.MethodPost, "/hooks/srs/"+hookSecret+"/publish",
+				strings.NewReader(event(fmt.Sprint("p", i), "live", fmt.Sprint(channels[i]), "?secret="+secrets[i])))
+			rec := httptest.NewRecorder()
+			f.mux.ServeHTTP(rec, req)
+			codes <- rec.Code
+		}()
+	}
+	close(start)
+	accepted := 0
+	for range attempts {
+		switch code := <-codes; code {
+		case http.StatusOK:
+			accepted++
+		case http.StatusForbidden:
+		default:
+			t.Fatalf("beklenmeyen durum %d", code)
+		}
+	}
+	if accepted != quota {
+		t.Fatalf("eşzamanlı %d yayından %d kabul edildi, beklenen %d", attempts, accepted, quota)
+	}
+}
+
 func TestUnpublishWithMalformedStreamIsAccepted(t *testing.T) {
 	f := setup(t)
 	if code := f.post(hookSecret, "unpublish", event("a", "live", "abc", "")); code != http.StatusOK {

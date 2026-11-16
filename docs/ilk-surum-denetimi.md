@@ -14,7 +14,8 @@ bu PR'da yapılmadı.
 `SC` = `e2e/e2e_test.go:TestSingleChannelEndToEnd` · `EDGE` = `e2e/edge_test.go:TestSecondServerSharesTheViewers`
 (adım numarası testteki yorumdur) · `KES` = `e2e/edge_kesinti_test.go:TestEdgeDisableAndControlPartition` ·
 `KIR` = `e2e/kiraci_test.go:TestTenantsAreIsolated` · `PANEL` = `e2e/panel_test.go:TestPanelCreatedChannelCanBeStreamedAndWatched` ·
-`HTTPS` = `e2e/https_test.go` (`TestPanelLoginOverHTTPS`, `TestPanelPortIsOnlyOnLoopback`, `TestLoginLockoutFollowsTheClientBehindTheProxy`).
+`HTTPS` = `e2e/https_test.go` (`TestPanelLoginOverHTTPS`, `TestPanelPortIsOnlyOnLoopback`, `TestLoginLockoutFollowsTheClientBehindTheProxy`) ·
+`KOTA` = `e2e/kota_test.go:TestPublishBeyondChannelQuotaIsRejectedBySRS`.
 Diğer testler birim/entegrasyon testleridir (`go test -p 1 ./...`, gerçek PostgreSQL).
 
 ## Özet
@@ -24,12 +25,13 @@ Diğer testler birim/entegrasyon testleridir (`go test -p 1 ./...`, gerçek Post
 | §1 | Başarı ölçütleri | 3 | 2 | 0 |
 | §5 | Akışlar | 40 | 2 | 0 |
 | §6 | Güvenlik | 17 | 2 | 0 |
-| §7 | Hata durumları | 17 | 5 | 1 |
+| §7 | Hata durumları | 17 | 6 | 0 |
 | §8 | Test | 3 | 2 | 1 |
 
 Kodda tasarımla çelişen bir hata bulunmadı; yeni testlerin hiçbiri kod düzeltmesi gerektirmedi.
-Açık kalanlar: yayın kabulünde kota denetimi, gerçek OBS ve oynatıcılarla elle deneme. Panelin
-HTTPS'i (ters vekil, [A1](#a1-panel-https-i-ve-ters-vekil)) sonradan kapatıldı. Ayrıntı: [Açık maddeler](#açık-maddeler).
+Açık kalan: gerçek OBS ve oynatıcılarla elle deneme. Yayın kabulünde kota denetimi
+([A2](#a2-yayın-kabulünde-kota), §7 sütununda) ve panelin HTTPS'i (ters vekil,
+[A1](#a1-panel-https-i-ve-ters-vekil), §6 sütununda) sonradan ayrı PR'larda kapatıldı. Ayrıntı: [Açık maddeler](#açık-maddeler).
 
 ## §1 Başarı ölçütleri
 
@@ -180,7 +182,7 @@ HTTPS'i (ters vekil, [A1](#a1-panel-https-i-ve-ters-vekil)) sonradan kapatıldı
 | H19 | Kanal veya izleyici silindi, anahtar ya da şifre yenilendi → ilgili yayın ve izlemeler kesilir; kesme başarısızsa kuyrukta yeniden denenir | `store/manage.go`, `session.go:Flush/kickAll` | `panelapi_test.go:TestChannelLifecycle`, `TestViewerLifecycle`, `TestKickFailureOnDeleteIsRetriedLater`; `store/kicks_test.go`; `session_test.go:TestQueuedKicksAreRetriedUntilTheySucceed`; `PANEL` | tamam | |
 | H20 | Çok sayıda eşzamanlı panel girişi → sınırlı sayıda doğrulanır; fazlası 503 | `internal/passhash/gate.go`, `panelapi.go:hashError` | `passhash/gate_test.go`; `panelapi_test.go:TestLoginIsBusyWhenThePasswordGateIsFull` (503 + `Retry-After`) | bu PR'da kapatıldı | HTTP eşlemesi önceden sınanmıyordu; test için `export_test.go` ile kapı değiştirilebilir |
 | H21 | Yayıncı askıya alındı → açık yayınları birkaç saniyede kesilir, izleyicileri izleyemez | `store/sessions.go:SuspendedLivePublishers`, `session.go:pass` | `session_test.go:TestEnforceKicksRevokedAndUnentitledConnections`; `SC`; `PANEL` | tamam | |
-| H22 | Geçersiz yayın anahtarı veya **kota aşımı** → SRS yayını reddeder | `hooks.go:onPublish` | `hooks_test.go:TestPublishRejectsWrongSecret` | **açık** (kota) | Bkz. [A2](#a2-yayın-kabulünde-kota) |
+| H22 | Geçersiz yayın anahtarı veya **kota aşımı** → SRS yayını reddeder; kanal kotası eşzamanlı canlı kanal üst sınırıdır, kota düşürülünce süren yayınlar kesilmez | `hooks.go:onPublish`, `store/queries.go:MarkLive` | `hooks_test.go:TestPublishRejectsWrongSecret`, `TestPublishRejectedBeyondConcurrentChannelQuota`, `TestConcurrentPublishesAcceptOnlyUpToTheChannelQuota`; `store/store_test.go:TestMarkLiveEnforcesConcurrentChannelQuota`, `TestConcurrentMarkLiveCannotExceedChannelQuota`; `KOTA` | kapatıldı (A2 PR'ı) | Bkz. [A2](#a2-yayın-kabulünde-kota) |
 | H23 | Aynı kanala ikinci yayın bağlantısı → ikincisi reddedilir | `store/queries.go:MarkLive` | `hooks_test.go:TestSecondPublisherRejectedAndCannotTakeChannelOffline` | tamam | |
 
 ## §8 Test
@@ -249,12 +251,32 @@ Kalan: gerçek bir alan adıyla ACME sertifikası alınması bu ortamda sınanam
 
 ### A2. Yayın kabulünde kota
 
-§7 "Geçersiz yayın anahtarı veya kota aşımı → SRS yayını reddeder". `internal/hooks/hooks.go:onPublish`
-gizli anahtarı, yayıncının durumunu ve tekil yayını denetler, hiçbir kotaya bakmaz. Kanal kotası
-yalnızca kanal oluştururken uygulanır (`internal/store/quotas.go`); yönetici kotayı düşürürse fazla
-kanallar yayın açmaya devam eder. Tasarım hangi kotayı kastettiğini söylemiyor (düşürülmüş kanal
-kotası mı, eşzamanlı canlı kanal sayısı mı); karar verilince `onPublish`'e denetim ve
-`hooks_test.go`'ya test eklenmeli.
+**Kapatıldı.** §7 "Geçersiz yayın anahtarı veya kota aşımı → SRS yayını reddeder". Önceden
+`internal/hooks/hooks.go:onPublish` gizli anahtarı, yayıncının durumunu ve tekil yayını denetliyor,
+hiçbir kotaya bakmıyordu; kanal kotası yalnızca kanal oluştururken uygulanıyordu
+(`internal/store/quotas.go`), yönetici kotayı düşürünce fazla kanallar yayın açmaya devam ediyordu.
+
+Karar: yayın kabulünde kanal kotası (`max_channels`) **eşzamanlı canlı kanal üst sınırıdır**.
+Yayıncının o anda canlı kanal sayısı kotaya eşit ya da fazlaysa yeni yayın reddedilir; hangi kanalın
+"fazla" olduğu seçilmez, ilk gelen açar. Kota 0 ise kanal oluşturmadaki kuralla (`count >= limit`)
+aynı biçimde hiç yayın açılamaz. Kota düşürülünce süren yayınlara dokunulmaz, yalnız yenileri
+reddedilir. Tasarım §7 tablosuna iki satır eklendi.
+
+Uygulama: `store/queries.go:MarkLive` tekil yayın denetimiyle kota denetimini tek işlemde yapar;
+yayıncı satırını `FOR UPDATE` ile kilitler (kanal oluşturmadaki `insertWithinQuota` gibi), canlı
+kanalları sayar ve yer varsa kanalı işaretler. Aynı yayıncının eşzamanlı iki yayını kotayı
+aşamaz. Kota reddi `ErrQuotaExceeded` döner, `onPublish` 403 verir ve loga yazar. Panelde
+reddedilen yayın için ayrı bir iz (olay, durum) yoktu; yeni arayüz eklenmedi. Yayıncı panelinde
+kota ve canlı kanal sayısı zaten görünür.
+
+Sınanan: `store/store_test.go:TestMarkLiveEnforcesConcurrentChannelQuota` ve
+`TestConcurrentMarkLiveCannotExceedChannelQuota`; `hooks_test.go:TestPublishRejectedBeyondConcurrentChannelQuota`
+ve `TestConcurrentPublishesAcceptOnlyUpToTheChannelQuota`; uçtan uca `e2e/kota_test.go`
+(`KOTA`): kotası 2 olan yayıncının FFmpeg ile açılan üçüncü yayını SRS'ten reddedilir, biri
+kapanınca üçüncü açılır, kota 1'e düşürülünce süren iki yayın sürer ve yenisi reddedilir.
+
+Bilinen sınır: SRS çökerse "canlı" işareti eşitleme döngüsü (`ReconcileLive`) temizleyene kadar
+kotadan düşer; bu, aynı kanala ikinci yayın reddiyle aynı davranıştır.
 
 ### A3. Elle deneme
 

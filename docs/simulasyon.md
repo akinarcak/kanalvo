@@ -73,6 +73,8 @@ bir geliştirme ortamının yanında kalkabilir.
 
 ## Senaryolar
 
+Toplam 9 senaryo (`e2e/` altındaki 9 `Test…` işlevi; `TestMain` senaryo değildir).
+
 | Test | Dosya | Ne sınar |
 |---|---|---|
 | `TestSingleChannelEndToEnd` | `e2e/e2e_test.go` | Tek kanal: yayın yokken 404; sahte yayınla `.ts` ve HLS; Xtream girişi, kanal listesi, M3U ve kısa adres; yanlış şifre ve sahte imzaların reddi; bağlantı limiti (en eski izleme kesilir, `.ts` ve HLS); origin'den RTMP izlemenin reddi; SRS yönetim API'sinin ve sorgu uçlarının dışarıya kapalı olması; yayın bitince çevrimdışı; yayıncı askıya alınınca yayının kesilmesi ve `Disabled`; loglarda gizli değer olmaması |
@@ -83,6 +85,7 @@ bir geliştirme ortamının yanında kalkabilir.
 | `TestPanelLoginOverHTTPS` | `e2e/https_test.go` | Panelin sertifikası `localhost` için Caddy'nin iç CA'sından; HTTPS'ten giriş; çerez `Secure` ve `HttpOnly`; Caddy'nin HTTP portuna gelen giriş ve çerezli istek panele ulaşmadan HTTPS'e yönlenir |
 | `TestPanelPortIsOnlyOnLoopback` | `e2e/https_test.go` | `api`'nin 8002'si `127.0.0.1`'e bağlı; makinenin dış IPv4 adresinden bağlantı kurulamaz, aynı adresten Caddy'nin HTTPS portuna kurulur |
 | `TestLoginLockoutFollowsTheClientBehindTheProxy` | `e2e/https_test.go` | İkinci istemci (caddy kapsayıcısından) her istekte farklı uydurulmuş `X-Forwarded-For` ile 20 hatalı girişte 401, sonra 429 alır; bu makineden gelen istemci (uydurulmuş başlıkla da) kilitlenmez. Kilit vekilin değil istemcinin adresine uygulanır |
+| `TestPublishBeyondChannelQuotaIsRejectedBySRS` | `e2e/kota_test.go` | Kanal kotası yayın kabulünde eşzamanlı canlı kanal sınırıdır: kotası 2 olan yayıncının FFmpeg ile açılan üçüncü yayını SRS'ten reddedilir (FFmpeg bağlantısı kapanır, kanal çevrimdışı kalır); biri kapanınca üçüncü açılır; kota 1'e düşürülünce süren iki yayın sürer, yenisi reddedilir |
 
 ffprobe bulunmazsa görüntü çözen iki test (`TestTenantsAreIsolated`, `TestEdgeDisableAndControlPartition`)
 atlanır (`SKIP`); betik ffprobe yoksa hiç başlamaz.
