@@ -2,35 +2,49 @@ package httpserve_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
+	"syscall"
 	"testing"
 	"time"
 
 	"kanalvo/internal/httpserve"
 )
 
-func freeAddr(t *testing.T) string {
+// listen, testin sahip olduğu bir dinleyici açar. Port hiç bırakılmadığı için başka bir süreç
+// araya girip onu kapamaz.
+func listen(t *testing.T) net.Listener {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer l.Close()
-	return l.Addr().String()
+	t.Cleanup(func() { l.Close() })
+	return l
 }
 
-func waitUp(t *testing.T, addr string) {
+// waitClosed, sunucunun Shutdown ile l'yi kapattığını doğrular: kapalı dinleyicide Accept
+// net.ErrClosed döner, açık dinleyicide bekler.
+func waitClosed(t *testing.T, l net.Listener, msg string) {
 	t.Helper()
-	for i := 0; i < 100; i++ {
-		if c, err := net.Dial("tcp", addr); err == nil {
+	accepted := make(chan error, 1)
+	go func() {
+		c, err := l.Accept()
+		if err == nil {
 			c.Close()
-			return
 		}
-		time.Sleep(20 * time.Millisecond)
+		accepted <- err
+	}()
+	select {
+	case err := <-accepted:
+		if !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("%s: Accept hatası net.ErrClosed değil: %v", msg, err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal(msg)
 	}
-	t.Fatalf("%s dinlemeye başlamadı", addr)
 }
 
 func TestNewSetsTimeouts(t *testing.T) {
@@ -48,14 +62,14 @@ func TestRunWaitsForInFlightRequestsOnShutdown(t *testing.T) {
 		time.Sleep(400 * time.Millisecond)
 		io.WriteString(w, "done")
 	})
-	a, b := freeAddr(t), freeAddr(t)
+	la, lb := listen(t), listen(t)
+	a := la.Addr().String()
+	sa, sb := httpserve.New(a, mux), httpserve.New(lb.Addr().String(), http.NewServeMux())
 	ctx, cancel := context.WithCancel(context.Background())
 	runErr := make(chan error, 1)
 	go func() {
-		runErr <- httpserve.Run(ctx, 5*time.Second, httpserve.New(a, mux), httpserve.New(b, http.NewServeMux()))
+		runErr <- httpserve.RunWithListeners(ctx, 5*time.Second, map[*http.Server]net.Listener{sa: la, sb: lb}, sa, sb)
 	}()
-	waitUp(t, a)
-	waitUp(t, b)
 
 	body := make(chan string, 1)
 	go func() {
@@ -87,32 +101,26 @@ func TestRunWaitsForInFlightRequestsOnShutdown(t *testing.T) {
 	default:
 		t.Fatal("Run, süren istek bitmeden döndü")
 	}
-	if _, err := net.DialTimeout("tcp", b, 200*time.Millisecond); err == nil {
-		t.Fatal("ikinci sunucu da kapanmış olmalı")
-	}
+	waitClosed(t, lb, "ikinci sunucu da kapanmış olmalı")
 }
 
 func TestRunReturnsErrorWhenAServerCannotListen(t *testing.T) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l.Close()
-	free := freeAddr(t)
+	busy := listen(t)
+	open := listen(t)
+	ok := httpserve.New(open.Addr().String(), http.NewServeMux())
+	blocked := httpserve.New(busy.Addr().String(), http.NewServeMux())
 
 	done := make(chan error, 1)
 	go func() {
-		done <- httpserve.Run(context.Background(), time.Second, httpserve.New(free, http.NewServeMux()), httpserve.New(l.Addr().String(), http.NewServeMux()))
+		done <- httpserve.RunWithListeners(context.Background(), time.Second, map[*http.Server]net.Listener{ok: open}, ok, blocked)
 	}()
 	select {
 	case err := <-done:
-		if err == nil {
-			t.Fatal("dolu port için hata bekleniyordu")
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			t.Fatalf("dolu port için EADDRINUSE bekleniyordu, gelen: %v", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run dönmedi")
 	}
-	if _, err := net.DialTimeout("tcp", free, 200*time.Millisecond); err == nil {
-		t.Fatal("bir sunucu açılamayınca diğeri de kapatılmalı")
-	}
+	waitClosed(t, open, "bir sunucu açılamayınca diğeri de kapatılmalı")
 }
