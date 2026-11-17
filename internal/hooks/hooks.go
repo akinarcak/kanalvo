@@ -36,16 +36,27 @@ type Edges interface {
 	PullAllowed(ctx context.Context, ip string) (bool, error)
 }
 
+// Origin, yayıncıların bağlandığı origin SRS'in yönetim API'sidir (bkz. srsapi.Client).
+type Origin interface {
+	// ClientIDs, SRS'e bağlı tüm bağlantıların (yayıncı, izleyici, edge çekmesi) kimlikleridir.
+	ClientIDs(ctx context.Context) ([]string, error)
+}
+
+// originTimeout, yayın sorgusu sırasında origin'in bağlantı listesini beklemek için en uzun süredir.
+// SRS, yayıncıyı bu sorgunun yanıtını alana kadar bekletir.
+const originTimeout = 2 * time.Second
+
 type Handler struct {
 	store    *store.Store
 	signer   *token.Signer
 	sessions *session.Manager
 	edges    Edges
+	origin   Origin
 	now      func() time.Time
 }
 
-func New(s *store.Store, signer *token.Signer, sessions *session.Manager, edges Edges, now func() time.Time) *Handler {
-	return &Handler{store: s, signer: signer, sessions: sessions, edges: edges, now: now}
+func New(s *store.Store, signer *token.Signer, sessions *session.Manager, edges Edges, origin Origin, now func() time.Time) *Handler {
+	return &Handler{store: s, signer: signer, sessions: sessions, edges: edges, origin: origin, now: now}
 }
 
 // Register, kontrol sunucusundaki SRS'lerin çağırdığı olayları kaydeder. Bu uçlar dışarıya
@@ -149,6 +160,12 @@ func (h *Handler) onPublish(ctx context.Context, ev Event) int {
 	}
 	// Tekil yayın ve kanal kotası (eşzamanlı canlı kanal sayısı) aynı işlemde denetlenir.
 	started, err := h.store.MarkLive(ctx, id, ev.ClientID)
+	if (err == nil && !started) || errors.Is(err, store.ErrQuotaExceeded) {
+		// Engel, SRS çöktüğü için "yayın bitti" bildirimi gelmemiş bayat bir işaret olabilir.
+		if h.clearStalePublishers(ctx, id) {
+			started, err = h.store.MarkLive(ctx, id, ev.ClientID)
+		}
+	}
 	if errors.Is(err, store.ErrQuotaExceeded) {
 		log.Printf("hooks: kanal %d yayını reddedildi: yayıncı %d canlı kanal kotasında", id, ch.TenantID)
 		return http.StatusForbidden
@@ -157,9 +174,55 @@ func (h *Handler) onPublish(ctx context.Context, ev Event) int {
 		return failure(err)
 	}
 	if !started {
+		log.Printf("hooks: kanal %d yayını reddedildi: kanal zaten yayında", id)
 		return http.StatusForbidden
 	}
 	return http.StatusOK
+}
+
+// clearStalePublishers, yayıncının yayında görünen kanallarından yayını açan bağlantısı origin
+// SRS'te artık olmayanları çevrimdışı yapar. Origin yanıt verdiyse ve temizlik yapıldıysa true döner;
+// bu sorgunun kendisi hiçbir kanalı çevrimdışı yapmamış olsa da: SRS yeniden başlayınca yayıncılar
+// aynı anda yeniden bağlanır ve bayat işareti başka bir kanalın sorgusu temizlemiş olabilir.
+//
+// SRS çöküp yeniden başlayınca on_unpublish gelmez; eşitleme döngüsü (reconcile) temizleyene kadar
+// kanallar canlı görünür ve yeniden bağlanan yayıncı "ikinci yayın" ya da kota gerekçesiyle
+// reddedilirdi. Karar kanal adına değil bağlantı kimliğine göre verilir: yeni bağlantının kendisi
+// ve edge'lerin çekme (play) bağlantıları da SRS'in listesindedir, ama kayıtlı yayıncı kimliğiyle
+// eşleşmezler. Yayıncı bağlantısı yayın sorgusundan önce listeye girdiği için kabul edilmiş ve
+// sürmekte olan bir yayın listede görünür ve dokunulmaz. SRS'e ulaşılamazsa hiçbir kanala dokunulmaz.
+func (h *Handler) clearStalePublishers(ctx context.Context, channelID int64) bool {
+	live, err := h.store.LivePublishers(ctx, channelID)
+	if err != nil {
+		log.Printf("hooks: kanal %d: yayında görünen kanallar okunamadı: %v", channelID, err)
+		return false
+	}
+	listCtx, cancel := context.WithTimeout(ctx, originTimeout)
+	defer cancel()
+	ids, err := h.origin.ClientIDs(listCtx)
+	if err != nil {
+		log.Printf("hooks: kanal %d: origin'in bağlantı listesi alınamadı, bayat yayın işaretleri temizlenmedi: %v", channelID, err)
+		return false
+	}
+	connected := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		connected[id] = true
+	}
+	var stale []store.LivePublisher
+	for _, p := range live {
+		if !connected[p.ClientID] {
+			stale = append(stale, p)
+		}
+	}
+	n, err := h.store.ClearStalePublishers(ctx, stale)
+	if err != nil {
+		log.Printf("hooks: kanal %d: bayat yayın işaretleri temizlenemedi: %v", channelID, err)
+		return false
+	}
+	if n > 0 {
+		log.Printf("hooks: kanal %d: yayını origin'de olmayan %d kanal çevrimdışı yapıldı", channelID, n)
+	}
+	return true
 }
 
 // onUnpublish her zaman kabul eder: SRS reddettiği bağlantılar için de bu bildirimi gönderebilir.

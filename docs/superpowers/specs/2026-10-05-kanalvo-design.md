@@ -174,6 +174,10 @@ kayıt sırasında edge'in anahtarı üretilir.
 SRS çöker veya yeniden başlarsa "yayın bitti" bildirimi gelmez. API bu
 yüzden SRS'in yayın listesini düzenli olarak sorar ve listede olmayan
 kanalları çevrimdışı yapar; SRS'e ulaşılamazsa hiçbir kanala dokunmaz.
+Yeniden bağlanan yayıncı bu turu beklemez: yayın sorgusu "kanal zaten
+yayında" ya da kota gerekçesiyle reddedilecekse API o anda origin'in
+bağlantı listesine bakar; kayıtlı yayıncı bağlantısı listede olmayan
+kanalları çevrimdışı yapar ve kararı bir kez yeniden verir.
 
 ### Xtream uçları
 
@@ -265,6 +269,7 @@ kanalları çevrimdışı yapar; SRS'e ulaşılamazsa hiçbir kanala dokunmaz.
 | Yayıncının canlı kanal sayısı kanal kotasında | Yeni yayını SRS reddeder. Kanal kotası yayın kabulünde eşzamanlı canlı kanal üst sınırıdır; hangi kanalın açılacağı seçilmez, ilk gelen açar. Kota 0 ise (kanal oluşturmada olduğu gibi) hiç yayın açılamaz |
 | Kanal kotası düşürüldü | Süren yayınlar kesilmez; canlı kanal sayısı yeni kotanın altına inene kadar yeni yayınlar reddedilir |
 | Aynı kanala ikinci yayın bağlantısı | İkincisi reddedilir |
+| SRS yeniden başladı (çöktü, "yayın bitti" bildirimi gelmedi) | Yeniden bağlanan yayın hemen kabul edilir: "kanal zaten yayında" ya da kota reddinden önce origin'in bağlantı listesine bakılır, yayıncı bağlantısı listede olmayan kanallar çevrimdışı yapılır. Karşılaştırma kanal adına değil bağlantı kimliğine göre yapılır; yeni bağlantının kendisi ve edge'lerin çekme bağlantıları eski yayın sayılmaz. Gerçekten süren bir yayına dokunulmaz, ikinci yayın ve kota kuralları geçerlidir. SRS'e ulaşılamazsa yayın reddedilir, hiçbir kanala dokunulmaz; eşitleme döngüsü (15 sn) yine temizler |
 
 ## 8. Test
 

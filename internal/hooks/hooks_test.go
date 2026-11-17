@@ -2,10 +2,12 @@ package hooks_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,6 +30,7 @@ type fixture struct {
 	signer  *token.Signer
 	mux     *http.ServeMux
 	srs     *sessiontest.FakeSRS
+	origin  *fakeOrigin
 	manager *session.Manager
 	tenant  int64
 	channel int64
@@ -51,10 +54,43 @@ func setup(t *testing.T) *fixture {
 	f.srs = &sessiontest.FakeSRS{}
 	f.manager = session.New(f.store, sessiontest.For(f.srs), f.srs, 30*time.Second, 6*time.Hour)
 	f.local = testdb.LocalEdge(t)
-	h := hooks.New(f.store, f.signer, f.manager, balancer.New(f.store, 15*time.Second, 0), func() time.Time { return now })
+	f.origin = &fakeOrigin{err: errUnreachable}
+	h := hooks.New(f.store, f.signer, f.manager, balancer.New(f.store, 15*time.Second, 0), f.origin, func() time.Time { return now })
 	h.Register(f.mux, hookSecret, f.local)
 	h.RegisterEdge(f.mux)
 	return f
+}
+
+// fakeOrigin, origin SRS'in bağlantı listesidir. Varsayılanı ulaşılamayan SRS'tir: bağlantı listesini
+// kurmayan testlerde yayın sorgusu bayat işaret temizleyemez, bugünkü kurallar aynen geçerlidir.
+type fakeOrigin struct {
+	mu        sync.Mutex
+	connected []string
+	err       error
+	calls     int
+}
+
+var errUnreachable = errors.New("sahte origin: ulaşılamıyor")
+
+func (o *fakeOrigin) ClientIDs(context.Context) ([]string, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.calls++
+	return o.connected, o.err
+}
+
+// originConnected, origin'e yalnızca verilen bağlantıların bağlı olduğu durumu kurar (ör. SRS
+// yeniden başlamış, eski yayıncılar listede yok).
+func (f *fixture) originConnected(ids ...string) {
+	f.origin.mu.Lock()
+	defer f.origin.mu.Unlock()
+	f.origin.connected, f.origin.err = append([]string{}, ids...), nil
+}
+
+func (f *fixture) originCalls() int {
+	f.origin.mu.Lock()
+	defer f.origin.mu.Unlock()
+	return f.origin.calls
 }
 
 func (f *fixture) post(secret, event, body string) int {

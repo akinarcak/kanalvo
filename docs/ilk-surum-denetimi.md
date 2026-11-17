@@ -82,7 +82,7 @@ Açık kalan: gerçek OBS ve oynatıcılarla elle deneme. Yayın kabulünde kota
 | E7 | Sağlık: her edge 5 sn'de bir sorulur; son 15 sn'de yanıt veren sağlıklıdır | `main.go` (`enforceInterval`, `edgeHealthWindow`), `session.go:enforceEdge`, `store/edges.go` | `store/edges_test.go:TestEdgeIsHealthyOnlyWhileItsSignalIsFresh`, `session_test.go:TestUnreachableEdgeLosesHealthWithoutBlockingOthers`; `EDGE` adım 8; `KES` (kopmadan 10-15 sn sonra yönlendirmeden çıkar) | tamam | Edge listesi 2 sn önbellekli: etkisi en geç ~17 sn |
 | E8 | Yerel edge'in HLS'i `.ts` dağıtıcısından bağımsız, her zaman kullanılabilir | `balancer.go:eligible` | `balancer_test.go:TestLocalEdgeServesHLSEvenWithoutAHealthSignal`; `play/edge_test.go:TestNoHealthyEdgeIsServiceUnavailable` | tamam | |
 | E9 | Seçim: etkin ve sağlıklı edge'ler arasından ağırlıkla orantılı rastgele | `balancer.go:Choose` | `balancer_test.go:TestChooseDistributesByWeight`, `TestChooseSkipsUnhealthyAndDisabledEdges` | tamam | |
-| E10 | SRS çöker veya yeniden başlarsa yayın listesi düzenli sorulur, listede olmayan kanal çevrimdışı olur; SRS'e ulaşılamazsa dokunulmaz | `internal/reconcile/reconcile.go:RunOnce`, `store/queries.go:ReconcileLive` | `reconcile_test.go:TestRunOnceClearsStaleLive`, `TestRunOnceLeavesChannelsAloneWhenSRSFails`, `TestRunOnceLeavesChannelsAloneWhenSRSUnreachable` | tamam | |
+| E10 | SRS çöker veya yeniden başlarsa yayın listesi düzenli sorulur, listede olmayan kanal çevrimdışı olur; SRS'e ulaşılamazsa dokunulmaz. Yeniden bağlanan yayıncı bu turu beklemez: ret öncesi origin'in bağlantı listesine bakılır | `internal/reconcile/reconcile.go:RunOnce`, `store/queries.go:ReconcileLive`; `hooks.go:clearStalePublishers`, `store/queries.go:LivePublishers/ClearStalePublishers` | `reconcile_test.go:TestRunOnceClearsStaleLive`, `TestRunOnceLeavesChannelsAloneWhenSRSFails`, `TestRunOnceLeavesChannelsAloneWhenSRSUnreachable`; `hooks/srs_restart_test.go`; `store_test.go:TestLivePublishersAndClearStalePublishers`; uçtan uca `e2e/srs_yeniden_test.go` | tamam | |
 
 ### Xtream uçları
 
@@ -275,8 +275,15 @@ ve `TestConcurrentPublishesAcceptOnlyUpToTheChannelQuota`; uçtan uca `e2e/kota_
 (`KOTA`): kotası 2 olan yayıncının FFmpeg ile açılan üçüncü yayını SRS'ten reddedilir, biri
 kapanınca üçüncü açılır, kota 1'e düşürülünce süren iki yayın sürer ve yenisi reddedilir.
 
-Bilinen sınır: SRS çökerse "canlı" işareti eşitleme döngüsü (`ReconcileLive`) temizleyene kadar
-kotadan düşer; bu, aynı kanala ikinci yayın reddiyle aynı davranıştır.
+Bilinen sınır (giderildi, 2026-11-17): SRS çökünce "canlı" işareti eşitleme döngüsü
+(`ReconcileLive`) temizleyene kadar kotada sayılıyor ve aynı kanala yeniden bağlanan yayıncı
+"ikinci yayın" sayılıp reddediliyordu. Simülasyonda yeniden kabul SRS ayağa kalktıktan 13,6 ve
+22,5 sn sonra geldi, araya 10 ve 17 ret girdi. Artık `onPublish` "kanal zaten yayında" ya da kota
+reddinden önce origin'in bağlantı listesine bakar (`hooks.go:clearStalePublishers`). Kayıtlı
+yayıncı bağlantısı listede olmayan kanalları, kimlik değişmediyse çevrimdışı yapar
+(`store/queries.go:ClearStalePublishers`) ve kararı bir kez yeniden verir. SRS'e ulaşılamazsa
+eskisi gibi reddeder ve hiçbir kanala dokunmaz. Ölçülen yeniden kabul 0,1-0,6 sn (bütün senaryolar
+art arda koşarken 2,4 sn'ye kadar), ret yok (`e2e/srs_yeniden_test.go`, sınır 5 sn).
 
 ### A3. Elle deneme
 

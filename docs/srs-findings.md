@@ -104,7 +104,7 @@ dış adresler üzerinden:
 | `/live/<kullanıcı>/<şifre>/<kanal>.m3u8` | H.264 640x360 + AAC algılandı, 4 saniye hatasız çözüldü |
 | Aynı kanala ikinci yayın | Reddedildi; ilk yayın sürdü |
 | Yanlış gizli anahtarla yayın | Reddedildi |
-| SRS öldürülüp yeniden başlatıldı | Kanal yaklaşık 30 saniye içinde çevrimdışı oldu, yeni yayın kabul edildi |
+| SRS öldürülüp yeniden başlatıldı | Kanal yaklaşık 30 saniye içinde çevrimdışı oldu, yeni yayın kabul edildi (2026-11-17 itibarıyla yeniden bağlanan yayın beklemeden kabul edilir; bkz. `e2e/srs_yeniden_test.go`) |
 
 OBS ve masaüstü oynatıcıyla (VLC, TiviMate) elle doğrulama henüz yapılmadı.
 

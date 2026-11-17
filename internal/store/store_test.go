@@ -255,6 +255,48 @@ func TestReconcileLive(t *testing.T) {
 	}
 }
 
+// SRS yeniden başladığında yayın sorgusu bayat "canlı" işaretlerini bağlantı kimliğine göre
+// temizler (bkz. hooks.clearStalePublishers).
+func TestLivePublishersAndClearStalePublishers(t *testing.T) {
+	s, ctx := testdb.New(t), context.Background()
+	tid := must(s.CreateTenant(ctx, "t"))
+	a := must(s.CreateChannel(ctx, tid, "a", "sa"))
+	b := must(s.CreateChannel(ctx, tid, "b", "sb"))
+	idle := must(s.CreateChannel(ctx, tid, "c", "sc"))
+	other := must(s.CreateTenant(ctx, "başka"))
+	x := must(s.CreateChannel(ctx, other, "x", "sx"))
+	must(s.MarkLive(ctx, a, "ca"))
+	must(s.MarkLive(ctx, b, "cb"))
+	must(s.MarkLive(ctx, x, "cx"))
+
+	want := []store.LivePublisher{{ChannelID: a, ClientID: "ca"}, {ChannelID: b, ClientID: "cb"}}
+	for _, ch := range []int64{a, idle} {
+		if got := must(s.LivePublishers(ctx, ch)); fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("kanal %d: yayıncının yayındaki kanalları %v, beklenen %v", ch, got, want)
+		}
+	}
+
+	if n := must(s.ClearStalePublishers(ctx, nil)); n != 0 {
+		t.Fatalf("boş listeyle kanal temizlenmemeli: %d", n)
+	}
+	// b bu arada yeni bir bağlantıyla yeniden açılmış: eski kimlikle gelen istek ona dokunmaz.
+	must(s.ClearStalePublishers(ctx, []store.LivePublisher{{ChannelID: b, ClientID: "cb"}}))
+	if !must(s.MarkLive(ctx, b, "cb2")) {
+		t.Fatal("temizlenen kanal yeniden açılabilmeli")
+	}
+	stale := []store.LivePublisher{{ChannelID: a, ClientID: "ca"}, {ChannelID: b, ClientID: "cb"}, {ChannelID: x, ClientID: "başka"}}
+	if n := must(s.ClearStalePublishers(ctx, stale)); n != 1 {
+		t.Fatalf("yalnızca a temizlenmeliydi, temizlenen: %d", n)
+	}
+	if must(s.ChannelByID(ctx, a)).Live || !must(s.ChannelByID(ctx, b)).Live || !must(s.ChannelByID(ctx, x)).Live {
+		t.Fatal("yalnızca kimliği eşleşen kanal çevrimdışı olmalı")
+	}
+	// b'nin yayıncısı yeni bağlantıdır.
+	if err := s.MarkOffline(ctx, b, "cb2"); err != nil || must(s.ChannelByID(ctx, b)).Live {
+		t.Fatalf("b'nin yayıncısı cb2 olmalı: %v", err)
+	}
+}
+
 func TestStatusSetters(t *testing.T) {
 	s, ctx := testdb.New(t), context.Background()
 	tid := must(s.CreateTenant(ctx, "t"))
