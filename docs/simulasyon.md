@@ -9,6 +9,8 @@ Her şey Docker Compose ile kalkar; dış dünyadaki her parçanın yerini sahte
 | İzleyicinin Xtream oynatıcısı (TiviMate, IPTV Smarters, VLC) | `e2e/oynatici_test.go` içindeki `player`: `player_api.php` (giriş, `get_live_categories`, `get_live_streams`), `get.php` (M3U, `output=ts` ve `m3u8`) ve `/live/…` adreslerini çağırır; listedeki adresleri **ffprobe** ile açar ve görüntü karelerini çözer |
 | İkinci sunucu (uzak edge) | `deploy/edge` dosyalarıyla aynı makinede ayrı bir Compose projesi (`<proje>-edge`), ana sunucunun ağına bağlı |
 | Ağ kopması | `docker network disconnect`: edge'in nginx'i ana sunucunun ağından çıkarılır |
+| Panelin gerçek alan adı ve ACME sertifikası | `PANEL_DOMAIN=localhost`: Caddy sertifikayı kendi iç CA'sıyla üretir; testler bu CA'nın kök sertifikasını kapsayıcıdan (`/data/caddy/pki/authorities/local/root.crt`) alıp güvenir, doğrulama kapatılmaz |
+| Panele başka bir makineden giren ikinci istemci | `caddy` kapsayıcısının içinden busybox `wget` ile Caddy'nin 443 portuna giriş; Caddy'ye bu makineden gelen istemciden farklı bir adresten ulaşır |
 | Birden çok yayıncı | Panelden açılan iki yayıncı; her birinin sahte yayını farklı boyutta (640x360, 320x180), böylece izlenen görüntünün hangi yayıncıdan geldiği ffprobe ile ayırt edilir |
 
 ## Çalıştırma
@@ -43,6 +45,7 @@ Ortam bırakıldıysa tek bir senaryo betiksiz de koşulabilir; testler adresler
 ```bash
 export COMPOSE_PROJECT_NAME=kanalvo-sim KANALVO_API_PORT=18000 KANALVO_PANEL_PORT=18002 \
   KANALVO_TS_PORT=18081 KANALVO_RTMP_PORT=11935 KANALVO_PG_PORT=15432 EDGE_PORT=18090 \
+  KANALVO_HTTP_PORT=18880 KANALVO_HTTPS_PORT=18443 LOGIN_MAX_FAILURES=20 \
   INGEST_BASE_URL=rtmp://localhost:11935/live
 go test -tags e2e -count=1 -v -run TestEdgeDisableAndControlPartition ./e2e/
 ```
@@ -53,7 +56,9 @@ go test -tags e2e -count=1 -v -run TestEdgeDisableAndControlPartition ./e2e/
 |---|---|---|---|
 | `SIM_PROJECT` → `COMPOSE_PROJECT_NAME` | Compose proje adı; ağ `<proje>_default`, edge `<proje>-edge` olur | `kanalvo-sim` | `kanalvo` |
 | `KANALVO_API_PORT` | Xtream uçları ve HLS geçidi | 18000 | 8000 |
-| `KANALVO_PANEL_PORT` | Yönetim paneli | 18002 | 8002 |
+| `KANALVO_PANEL_PORT` | Panelin düz HTTP portu (yalnızca 127.0.0.1) | 18002 | 8002 |
+| `KANALVO_HTTPS_PORT` | Panel (Caddy, HTTPS) | 18443 | 443 |
+| `KANALVO_HTTP_PORT` | Caddy'nin HTTP portu (HTTPS'e yönlendirir) | 18880 | 80 |
 | `KANALVO_TS_PORT` | Kesintisiz `.ts` (`srs-ts`) | 18081 | 8081 |
 | `KANALVO_RTMP_PORT` | RTMP yayın girişi | 11935 | 1935 |
 | `KANALVO_PG_PORT` | PostgreSQL (yalnızca 127.0.0.1) | 15432 | 5432 |
@@ -61,10 +66,14 @@ go test -tags e2e -count=1 -v -run TestEdgeDisableAndControlPartition ./e2e/
 
 Port çakışırsa değişkeni vererek değiştirin, ör. `KANALVO_API_PORT=28000 SIM_PROJECT=kanalvo-sim2 e2e/sim.sh`.
 Betik `PUBLIC_BASE_URL`, `EDGE_TS_BASE_URL`, `EDGE_HLS_BASE_URL` ve `INGEST_BASE_URL` değerlerini
-portlardan üretir; `.env`'deki değerlerin yerine geçer. Simülasyon, `docker compose up` ile çalışan
+portlardan üretir; `.env`'deki değerlerin yerine geçer. Panel için `PANEL_DOMAIN=localhost`,
+`PANEL_TRUST_PROXY_HEADERS=true`, `PANEL_INSECURE_COOKIE=false` ve tasarımdaki giriş eşiği
+`LOGIN_MAX_FAILURES=20` verilir (eşik `SIM_LOGIN_MAX_FAILURES` ile değişir). Simülasyon, `docker compose up` ile çalışan
 bir geliştirme ortamının yanında kalkabilir.
 
 ## Senaryolar
+
+Toplam 9 senaryo (`e2e/` altındaki 9 `Test…` işlevi; `TestMain` senaryo değildir).
 
 | Test | Dosya | Ne sınar |
 |---|---|---|
@@ -72,7 +81,10 @@ bir geliştirme ortamının yanında kalkabilir.
 | `TestEdgeDisableAndControlPartition` | `e2e/edge_kesinti_test.go` | Edge'den ffprobe ile `.ts` ve HLS görüntüsü; **devre dışı bırakma**: yeni izleyici yönlendirilmez, süren `.ts` ve HLS izlemeleri sürer, edge origin'den yeni kanal çekemez; yeniden etkinleştirme; **ağ kopması** (yalnızca denetim bağlantısı): edge yönlendirmeden çıkar, oturumları kısa kopuklukta korunur, 2 dakikayı aşınca silinir; bağlantı dönünce edge yeniden izleyici alır, kopuklukta süren izleme sayılmaz ve kesilmez |
 | `TestSecondServerSharesTheViewers` | `e2e/edge_test.go` | İkinci sunucu: izleyicilerin iki sunucuya dağılması; kayıtsız çekme adresinin reddi; edge'den `.ts` ve HLS (önbellekten parça); oturuma izleyicinin adresinin yazılması; edge'in origin'den ilk izleyicide çekip son izleyicide bırakması; edge'de yetkisiz erişimlerin reddi; askıya alınan izleyicinin edge'deki izlemesinin kesilmesi; **edge kapanması**: sağlıksız görünme, başka sunucu yoksa 503, yerel sunucuya dönüş |
 | `TestTenantsAreIsolated` | `e2e/kiraci_test.go` | İki yayıncı ve iki izleyici: her oynatıcı yalnızca kendi kategorisini, kanalını ve M3U satırını görür; `.ts` ve `.m3u8`'den ffprobe ile **kendi yayıncısının** görüntüsü (boyuta göre) gelir; başka yayıncının kanalı 404; imza başka kanala taşınamaz; panel listeleri, arama ve oturumlar yalnızca kendi kayıtlarını içerir; başka yayıncının kayıtlarında değiştirme/silme 404; istekteki `tenant_id` reddedilir; yayıncı yönetici uçlarını kullanamaz |
-| `TestPanelCreatedChannelCanBeStreamedAndWatched` | `e2e/panel_test.go` | Panelden açılan yayıncı, kanal ve izleyiciyle yayın ve izleme; paneldeki M3U adresi; silinen izleyicinin izlemesinin kesilmesi; askıya alınan yayıncının yayınının kesilmesi ve panele girememesi |
+| `TestPanelCreatedChannelCanBeStreamedAndWatched` | `e2e/panel_test.go` | Panelden (HTTPS) açılan yayıncı, kanal ve izleyiciyle yayın ve izleme; paneldeki M3U adresi; silinen izleyicinin izlemesinin kesilmesi; askıya alınan yayıncının yayınının kesilmesi ve panele girememesi |
+| `TestPanelLoginOverHTTPS` | `e2e/https_test.go` | Panelin sertifikası `localhost` için Caddy'nin iç CA'sından; HTTPS'ten giriş; çerez `Secure` ve `HttpOnly`; Caddy'nin HTTP portuna gelen giriş ve çerezli istek panele ulaşmadan HTTPS'e yönlenir |
+| `TestPanelPortIsOnlyOnLoopback` | `e2e/https_test.go` | `api`'nin 8002'si `127.0.0.1`'e bağlı; makinenin dış IPv4 adresinden bağlantı kurulamaz, aynı adresten Caddy'nin HTTPS portuna kurulur |
+| `TestLoginLockoutFollowsTheClientBehindTheProxy` | `e2e/https_test.go` | İkinci istemci (caddy kapsayıcısından) her istekte farklı uydurulmuş `X-Forwarded-For` ile 20 hatalı girişte 401, sonra 429 alır; bu makineden gelen istemci (uydurulmuş başlıkla da) kilitlenmez. Kilit vekilin değil istemcinin adresine uygulanır |
 | `TestPublishBeyondChannelQuotaIsRejectedBySRS` | `e2e/kota_test.go` | Kanal kotası yayın kabulünde eşzamanlı canlı kanal sınırıdır: kotası 2 olan yayıncının FFmpeg ile açılan üçüncü yayını SRS'ten reddedilir (FFmpeg bağlantısı kapanır, kanal çevrimdışı kalır); biri kapanınca üçüncü açılır; kota 1'e düşürülünce süren iki yayın sürer, yenisi reddedilir |
 
 ffprobe bulunmazsa görüntü çözen iki test (`TestTenantsAreIsolated`, `TestEdgeDisableAndControlPartition`)
@@ -96,4 +108,4 @@ Yalnızca MPEG-TS eşitleme baytlarına bakan eski denetim (`isMPEGTS`) hızlı 
 - Gerçek OBS ve gerçek oynatıcılarla deneme (tasarım §8 "Elle") bu ortamın yerine geçmez; bkz.
   `docs/ilk-surum-denetimi.md`.
 - İki "sunucu" aynı Docker sunucusunda çalışır; gerçek ağ gecikmesi ve paket kaybı sınanmaz.
-- Panel HTTPS'i ve ters vekil simülasyonda yoktur (panel yerelde HTTP ile, `PANEL_INSECURE_COOKIE=true`).
+- Panelin HTTPS'i Caddy'nin iç CA'sıyla sınanır; gerçek alan adıyla ACME sertifikası alınması sınanmaz.

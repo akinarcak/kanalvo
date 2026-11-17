@@ -14,6 +14,7 @@ bu PR'da yapılmadı.
 `SC` = `e2e/e2e_test.go:TestSingleChannelEndToEnd` · `EDGE` = `e2e/edge_test.go:TestSecondServerSharesTheViewers`
 (adım numarası testteki yorumdur) · `KES` = `e2e/edge_kesinti_test.go:TestEdgeDisableAndControlPartition` ·
 `KIR` = `e2e/kiraci_test.go:TestTenantsAreIsolated` · `PANEL` = `e2e/panel_test.go:TestPanelCreatedChannelCanBeStreamedAndWatched` ·
+`HTTPS` = `e2e/https_test.go` (`TestPanelLoginOverHTTPS`, `TestPanelPortIsOnlyOnLoopback`, `TestLoginLockoutFollowsTheClientBehindTheProxy`) ·
 `KOTA` = `e2e/kota_test.go:TestPublishBeyondChannelQuotaIsRejectedBySRS`.
 Diğer testler birim/entegrasyon testleridir (`go test -p 1 ./...`, gerçek PostgreSQL).
 
@@ -23,13 +24,14 @@ Diğer testler birim/entegrasyon testleridir (`go test -p 1 ./...`, gerçek Post
 |---|---|---|---|---|
 | §1 | Başarı ölçütleri | 3 | 2 | 0 |
 | §5 | Akışlar | 40 | 2 | 0 |
-| §6 | Güvenlik | 17 | 1 | 1 |
+| §6 | Güvenlik | 17 | 2 | 0 |
 | §7 | Hata durumları | 17 | 6 | 0 |
 | §8 | Test | 3 | 2 | 1 |
 
 Kodda tasarımla çelişen bir hata bulunmadı; yeni testlerin hiçbiri kod düzeltmesi gerektirmedi.
-Açık kalanlar: panelin HTTPS'i (ters vekil), gerçek OBS ve oynatıcılarla elle deneme. Yayın
-kabulünde kota denetimi (A2) sonradan ayrı bir PR'da kapatıldı (§7 sütununda sayıldı). Ayrıntı: [Açık maddeler](#açık-maddeler).
+Açık kalan: gerçek OBS ve oynatıcılarla elle deneme. Yayın kabulünde kota denetimi
+([A2](#a2-yayın-kabulünde-kota), §7 sütununda) ve panelin HTTPS'i (ters vekil,
+[A1](#a1-panel-https-i-ve-ters-vekil), §6 sütununda) sonradan ayrı PR'larda kapatıldı. Ayrıntı: [Açık maddeler](#açık-maddeler).
 
 ## §1 Başarı ölçütleri
 
@@ -153,7 +155,7 @@ kabulünde kota denetimi (A2) sonradan ayrı bir PR'da kapatıldı (§7 sütunun
 | G13 | İzleyici IP başlığına yalnızca geçerli edge anahtarıyla güvenilir | `hlsgw.go:serve/serveEdgeAuth` | `hlsgw/edge_test.go:TestViewerCannotSpoofItsAddressOnTheLocalGateway`; `EDGE` adım 4 ve 6 | tamam | |
 | G14 | Edge'in SRS yönetim API'si nginx'te anahtarla korunur; SRS portları kapalı | `deploy/edge/nginx.conf.template`, `deploy/edge/docker-compose.yml` | `EDGE` adım 6 | tamam | |
 | G15 | Edge anahtarı ve denetim trafiği HTTP'de açık; özel ağ ya da HTTPS; yönetim adresi ayrı tutulabilir | `store/edges.go` (`control_url`) | `panelapi/edges_test.go:TestControlAddressFollowsTheViewerAddressUnlessSetSeparately`; `EDGE` (`E2E_EDGE_CONTROL_URL` ile HTTPS) | tamam | |
-| G16 | Panel yalnızca HTTPS üzerinden sunulur; Xtream HTTP'den de erişilebilir | Depoda TLS sonlandırıcı (Caddy) yok; `docker-compose.yml` paneli düz HTTP ile yayımlar | — | **açık** | Bkz. [A1](#a1-panel-https-i-ve-ters-vekil) |
+| G16 | Panel yalnızca HTTPS üzerinden sunulur; Xtream HTTP'den de erişilebilir | `docker-compose.yml` (`caddy` servisi; `api`'nin 8002'si yalnızca `127.0.0.1`), `deploy/caddy/Caddyfile` (`PANEL_DOMAIN`: gerçek alan adında ACME, `localhost`'ta iç CA); Xtream (8000) ve `.ts` (8081) HTTP'de | `HTTPS` (iç CA'ya güvenerek HTTPS'ten giriş, `Secure`/`HttpOnly` çerez, düz HTTP'nin HTTPS'e yönlenmesi, 8002'nin dış arayüzden kapalı olması) | kapatıldı | Bkz. [A1](#a1-panel-https-i-ve-ters-vekil). Gerçek alan adıyla ACME sınanmadı (simülasyonda alan adı yok) |
 
 ## §7 Hata durumları
 
@@ -162,7 +164,7 @@ kabulünde kota denetimi (A2) sonradan ayrı bir PR'da kapatıldı (§7 sütunun
 | H1 | Kanal çevrimdışıyken izleme → 404 | `play.go:serve`, `hlsgw.go:authorize` | `play_test.go:TestOfflineChannelIsNotFound` (bu PR'da `.m3u8` eklendi); `hlsgw_test.go:TestOfflineChannelIsNotFound`; `SC` | tamam | |
 | H2 | Geçersiz kullanıcı adı veya şifre → `auth: 0`; yayın isteğinde 403 | `xtream.go:playerAPI`, `play.go:serve` | `xtream_test.go:TestInvalidLoginIsAuthZero`; `play_test.go:TestRejectsInvalidViewer`; `SC` | tamam | |
 | H3 | Süresi dolmuş/askıdaki izleyici, askıdaki yayıncının izleyicisi → `auth: 1` + `Expired`/`Banned`/`Disabled`; listeler boş; yayın ve M3U 403 | `xtream.go`, `play.go` | `xtream_test.go:TestUnusableViewer`; `play_test.go:TestRejectsInvalidViewer`; `SC` (`Disabled`) | tamam | |
-| H4 | Aynı IP'den çok hatalı giriş → pencere bitene kadar 429 | `auth.go:Viewer` | `auth_test.go:TestBlocksIPAfterMaxFailures`; `ratelimit_test.go:TestUnblocksWhenWindowEnds`; `TestTooManyFailedLoginsReturn429` | tamam | |
+| H4 | Aynı IP'den çok hatalı giriş → pencere bitene kadar 429 | `auth.go:Viewer` | `auth_test.go:TestBlocksIPAfterMaxFailures`; `ratelimit_test.go:TestUnblocksWhenWindowEnds`; `TestTooManyFailedLoginsReturn429`; `HTTPS` (panelde Caddy arkasında: kilit vekile değil istemciye uygulanır, uydurulan `X-Forwarded-For` kilidi bölmez) | tamam | |
 | H5 | İzleyici başka yayıncının kanalını ister → 404 | `play.go:serve` | `play_test.go:TestOtherTenantChannelLooksMissing` (üç biçim); `KIR` | bu PR'da kapatıldı | Önceden yalnızca `.ts` biçimi sınanıyordu |
 | H6 | İzleyicinin bağlantı limiti dolu → yeni izleme kabul, en eski kesilir | `store/sessions.go:admit`, `session.go:kickEvicted` | `hooks_test.go:TestPlayBeyondConnectionLimitKicksTheOldestConnection`; `store/sessions_test.go`; `hlsgw_test.go:TestNewSessionEndsTheOlderOneWhenLimitIsReached`; `SC` | tamam | |
 | H7 | Yayıncının toplam bağlantı kotası dolu → yeni izleyici 403; süren izlemeler etkilenmez | `store/sessions.go`, `hooks.go:onPlay`, `hlsgw.go` | `hooks_test.go:TestPlayRejectedWhenTenantConnectionQuotaIsFull`; `hlsgw_test.go:TestTenantConnectionQuotaFull`; `store/sessions_test.go:TestConcurrentOpensCannotExceedTenantQuota` | tamam | `.ts`'te 403 SRS'e döner; izleyici HTTP 403 değil bağlantının kapanmasını görür (SRS davranışı) |
@@ -225,12 +227,27 @@ kabulünde kota denetimi (A2) sonradan ayrı bir PR'da kapatıldı (§7 sütunun
 
 ### A1. Panel HTTPS'i ve ters vekil
 
-§6 "Panel yalnızca HTTPS üzerinden sunulur" ve §3 "Ters vekil (Caddy)… tüm bileşenler tek komutta
-kalkar". Depoda Caddy servisi ya da yapılandırması yok; `docker-compose.yml` paneli (8002) bütün
-arayüzlerde düz HTTP ile yayımlıyor, README işi işletmeciye bırakıyor. `Secure` çerez HTTP'de
-oturumu taşımaz, ama giriş isteği (şifre) düz HTTP ile gidebilir. Alan adı ve sertifika (ACME)
-kararı gerektirdiği için bu PR'da yapılmadı. Ara adım önerisi: paneli varsayılan olarak
-`127.0.0.1:8002`'ye bağlamak ve Caddy servisini Compose'a profil olarak eklemek.
+**Durum: kapatıldı.** §6 "Panel yalnızca HTTPS üzerinden sunulur" ve §3 "Ters vekil (Caddy)… tüm
+bileşenler tek komutta kalkar". Denetim sırasında depoda Caddy yoktu ve `docker-compose.yml` paneli
+(8002) bütün arayüzlerde düz HTTP ile yayımlıyordu; `Secure` çerez HTTP'de oturumu taşımasa da giriş
+isteği (şifre) düz HTTP ile gidebiliyordu.
+
+Yapılan:
+
+- `docker-compose.yml`'e `caddy` servisi (`caddy:2.11.1-alpine`, 80 ve 443) eklendi;
+  `docker compose up` onu da kaldırır. Yapılandırma `deploy/caddy/Caddyfile`'dadır.
+- Alan adı `PANEL_DOMAIN`'den gelir. Gerçek bir alan adında Caddy sertifikayı ACME ile alır;
+  `localhost`'ta (verilmezse varsayılan budur) iç CA'sını kullanır ("tls internal"). Caddy bu
+  seçimi alan adına göre kendisi yapar; tek bir Caddyfile hem ACME'yi hem iç CA'yı karşılar.
+- `api`'nin 8002 portu varsayılan olarak yalnızca `127.0.0.1`'e bağlanır (`KANALVO_PANEL_BIND`);
+  panel dışarıya yalnızca Caddy'den gider. Xtream (8000) ve `.ts` (8081) tasarım gereği HTTP'de kalır.
+- Compose'da `PANEL_TRUST_PROXY_HEADERS` varsayılanı `true`, `PANEL_INSECURE_COOKIE` `false`; `.env.example`
+  ve README buna göre güncellendi.
+- Simülasyon Caddy'yi de kaldırır; panel testleri HTTPS'ten, Caddy'nin iç CA'sına güvenerek koşar.
+  Yeni senaryolar: `HTTPS` (bkz. kısaltmalar).
+
+Kalan: gerçek bir alan adıyla ACME sertifikası alınması bu ortamda sınanamaz; ilk kurulumda
+`docker compose logs caddy` ile bakılmalı.
 
 ### A2. Yayın kabulünde kota
 

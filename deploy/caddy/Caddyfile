@@ -1,0 +1,22 @@
+# Yönetim panelinin HTTPS'li ters vekili (bkz. README, "Yönetim paneli").
+#
+# Alan adı PANEL_DOMAIN ortam değişkeninden gelir; docker-compose.yml verilmediğinde localhost yazar.
+# Sertifikayı Caddy alan adına göre kendisi seçer:
+#   - Gerçek bir alan adında (ör. panel.ornek.com) ACME ile (Let's Encrypt, ZeroSSL) alır ve yeniler.
+#     Alan adı bu sunucuya yönlenmeli; 80 ve 443 portları dışarıdan açık olmalıdır.
+#   - localhost, *.localhost, *.internal, *.home.arpa ve IP adreslerinde Caddy'nin iç CA'sını kullanır
+#     ("tls internal"). Yerel geliştirme ve simülasyon böyle çalışır.
+# Sertifikalar ve iç CA caddy_data biriminde saklanır; birim silinirse yeniden alınır.
+{
+	# HTTP/3 (UDP 443) Compose'da açılmaz; tarayıcının boşuna denememesi için duyurulmaz.
+	servers {
+		protocols h1 h2
+	}
+}
+
+{$PANEL_DOMAIN:localhost} {
+	# Caddy istemcinin adresini X-Forwarded-For'a yazar ve istemcinin gönderdiği X-Forwarded-For'u
+	# atar (gelen bağlantılara güvenilen vekil tanımlı değil). Panel bu yüzden
+	# PANEL_TRUST_PROXY_HEADERS=true ile başlığın son değerini istemcinin adresi sayar.
+	reverse_proxy api:8002
+}
