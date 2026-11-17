@@ -14,8 +14,6 @@ import (
 	"time"
 )
 
-const panelURL = "http://localhost:8002"
-
 // panelClient, panele giriş yapmış bir tarayıcıyı taklit eder.
 type panelClient struct {
 	t    *testing.T
@@ -113,15 +111,11 @@ func TestPanelCreatedChannelCanBeStreamedAndWatched(t *testing.T) {
 	owner.call("POST", "/api/tenant/viewers", map[string]any{"username": fmt.Sprintf("izleyici%d", stamp%1000000)}, &viewer, http.StatusCreated)
 
 	// OBS'in yapacağı gibi: paneldeki sunucu adresi ve yayın anahtarıyla yayın aç.
-	if channel.IngestURL != "rtmp://localhost/live" {
+	if channel.IngestURL != envValue(t, "INGEST_BASE_URL") {
 		t.Fatalf("beklenmeyen yayın sunucusu: %s", channel.IngestURL)
 	}
-	const publisher = "kanalvo-e2e-panel-pub"
-	compose(t, "--profile", "e2e", "run", "-d", "--rm", "--name", publisher, "ffmpeg",
-		"-re", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=25", "-f", "lavfi", "-i", "sine=frequency=440",
-		"-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-g", "50", "-pix_fmt", "yuv420p",
-		"-c:a", "aac", "-f", "flv", "rtmp://srs/live/"+channel.StreamKey)
-	t.Cleanup(func() { stopContainer(publisher) })
+	publisher := project + "-e2e-panel-pub"
+	publish(t, publisher, channel.StreamKey, "320x180")
 
 	waitFor(t, "kanalın panelde yayında görünmesi", 30*time.Second, func() bool {
 		var list []struct {
@@ -171,4 +165,26 @@ func TestPanelCreatedChannelCanBeStreamedAndWatched(t *testing.T) {
 	waitFor(t, "askıdaki yayıncının yayınının kesilmesi", 30*time.Second, func() bool { return !containerRunning(publisher) })
 	owner.call("GET", "/api/tenant/channels", nil, nil, http.StatusUnauthorized)
 	newPanelClient(t).call("POST", "/api/login", map[string]string{"email": tenantEmail, "password": tenant.Password}, nil, http.StatusForbidden)
+}
+
+// status, isteği gönderir ve yalnızca durum kodunu döner (beklenen kodu çağıran denetler).
+func (c *panelClient) status(method, path string, body any) int {
+	c.t.Helper()
+	var payload io.Reader
+	if body != nil {
+		data, _ := json.Marshal(body)
+		payload = bytes.NewReader(data)
+	}
+	req, err := http.NewRequest(method, panelURL+path, payload)
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Kanalvo-Panel", "1")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		c.t.Fatalf("%s %s: %v", method, path, err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode
 }

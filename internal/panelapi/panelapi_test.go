@@ -663,6 +663,26 @@ func TestTenantsCannotTouchEachOthersRecords(t *testing.T) {
 		}
 	}
 
+	// Genel bakıştaki sayılar yalnızca A'nındır: B'nin izleyicisi ve süren izlemesi sayılmaz.
+	var overview struct {
+		Usage struct{ Channels, Viewers, Connections int }
+	}
+	a.want(a.get("/api/tenant/overview"), http.StatusOK).into(t, &overview)
+	if overview.Usage.Channels != 1 || overview.Usage.Viewers != 0 || overview.Usage.Connections != 0 {
+		t.Errorf("genel bakış başka yayıncının kayıtlarını sayıyor: %+v", overview.Usage)
+	}
+	// İstekle gelen yayıncı numarası hiçbir oluşturma ucunda kabul edilmez.
+	bID := must(f.store.TenantByEmail(context.Background(), "b@example.com")).ID
+	for path, body := range map[string]map[string]any{
+		"/api/tenant/categories": {"name": "sizma", "tenant_id": bID},
+		"/api/tenant/channels":   {"name": "sizma", "tenant_id": bID},
+		"/api/tenant/viewers":    {"username": "sizma", "tenant_id": bID},
+	} {
+		if r := a.post(path, body); r.code != http.StatusBadRequest {
+			t.Errorf("%s tenant_id alanıyla: durum %d, beklenen 400", path, r.code)
+		}
+	}
+
 	ctx := context.Background()
 	if c := must(f.store.ChannelByID(ctx, ch.ID)); c.Name != "B-kanal" || fmt.Sprintf("%d?secret=%s", c.ID, c.StreamSecret) != ch.StreamKey {
 		t.Fatalf("B'nin kanalı değişmemeli: %+v", c)
@@ -904,5 +924,49 @@ func TestSessionListIsPaged(t *testing.T) {
 	}
 	if r := tenant.get("/api/tenant/sessions?limit=0"); r.code != http.StatusBadRequest {
 		t.Errorf("limit=0: durum %d", r.code)
+	}
+}
+
+// Yönetici platform geneli canlı kanal ve süren izleme sayılarını görür (§5 Panel).
+func TestAdminStatsCountLiveChannelsAndSessions(t *testing.T) {
+	f := setup(t)
+	a, _, _ := f.newTenant("A", "a@example.com")
+	b, _, _ := f.newTenant("B", "b@example.com")
+	chA, chB := a.channel("A-kanal"), b.channel("B-kanal")
+	b.channel("B-kapali")
+	vA, vB := a.viewer("a_izleyici"), b.viewer("b_izleyici")
+	ctx := context.Background()
+	must(f.store.MarkLive(ctx, chA.ID, "a-yayinci"))
+	must(f.store.MarkLive(ctx, chB.ID, "b-yayinci"))
+	must(f.store.OpenTSSession(ctx, testdb.LocalEdge(t), vA.ID, chA.ID, "a-izleyen", "9.9.9.1", idle))
+	must(f.store.OpenTSSession(ctx, testdb.LocalEdge(t), vB.ID, chB.ID, "b-izleyen", "9.9.9.2", idle))
+
+	var stats map[string]int
+	admin := f.admin()
+	admin.want(admin.get("/api/admin/stats"), http.StatusOK).into(t, &stats)
+	want := map[string]int{"tenants": 2, "channels": 3, "live_channels": 2, "viewers": 2, "active_sessions": 2}
+	for k, v := range want {
+		if stats[k] != v {
+			t.Errorf("%s: %d, beklenen %d (%v)", k, stats[k], v, stats)
+		}
+	}
+	// Yayıncı bu sayıları göremez.
+	a.want(a.get("/api/admin/stats"), http.StatusForbidden)
+}
+
+// Aynı anda doğrulanabilecek şifre sayısı doluysa giriş 503 ve Retry-After alır (§7).
+func TestLoginIsBusyWhenThePasswordGateIsFull(t *testing.T) {
+	f := setup(t)
+	f.mux = http.NewServeMux()
+	h := panelapi.New(f.store, f.sessions, ratelimit.New(maxLoginFails, time.Minute, time.Now), panelapi.Config{SessionTTL: time.Hour, Idle: idle})
+	h.SetHashGate(passhash.NewGate(0, 10*time.Millisecond)) // hiç yer yok: her işlem sıra bekler
+	h.Register(f.mux)
+
+	r := f.anon().post("/api/login", map[string]string{"email": adminEmail, "password": adminPassword})
+	if r.code != http.StatusServiceUnavailable || r.rec.Header().Get("Retry-After") != "5" {
+		t.Fatalf("durum %d, Retry-After %q: %s", r.code, r.rec.Header().Get("Retry-After"), r.body)
+	}
+	if strings.Contains(r.body, adminPassword) {
+		t.Fatal("yanıt şifreyi içeriyor")
 	}
 }

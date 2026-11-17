@@ -9,4 +9,4 @@ services:
 networks:
   kanalvo:
     external: true
-    name: kanalvo_default
+    name: ${KANALVO_NETWORK:-kanalvo_default}
