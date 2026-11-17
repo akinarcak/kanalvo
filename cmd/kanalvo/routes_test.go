@@ -61,7 +61,7 @@ func TestPublicRoutesDoNotShadowEachOther(t *testing.T) {
 		t.Fatal(err)
 	}
 	edges := balancer.New(st, 15*time.Second, 0)
-	hook := hooks.New(st, signer, sessions, edges, time.Now)
+	hook := hooks.New(st, signer, sessions, edges, srs, time.Now)
 	mux := publicMux(st, signer, sessions, edges, hook, localEdge, cfg, public, upstream)
 
 	get := func(path string) *httptest.ResponseRecorder {

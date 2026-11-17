@@ -213,6 +213,47 @@ func (s *Store) MarkOffline(ctx context.Context, channelID int64, clientID strin
 	return err
 }
 
+// LivePublisher, yayında görünen bir kanal ile yayını açan SRS bağlantısıdır.
+type LivePublisher struct {
+	ChannelID int64
+	ClientID  string
+}
+
+// LivePublishers, verilen kanalın yayıncısına ait, yayında görünen kanalları ve yayıncı
+// bağlantılarını döner (kanalın kendisi dahil). Bunlar MarkLive'ın "kanal zaten yayında" ve kota
+// kararlarını veren kanallardır. Bağlantı kimliği kayıtlı olmayan kanal dönmez; böyle bir kanalın
+// yayının sürüp sürmediği bilinemez.
+func (s *Store) LivePublishers(ctx context.Context, channelID int64) ([]LivePublisher, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, publisher_client_id FROM channels
+		WHERE live AND publisher_client_id IS NOT NULL
+		  AND tenant_id = (SELECT tenant_id FROM channels WHERE id = $1)
+		ORDER BY id`, channelID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[LivePublisher])
+}
+
+// ClearStalePublishers, listedeki kanalları, yayını hâlâ listedeki bağlantıya aitse çevrimdışı
+// yapar. Kanal bu arada yeni bir bağlantıyla yeniden açıldıysa (kimlik değiştiyse) dokunulmaz;
+// böylece liste alındıktan sonra açılan bir yayın kapatılmaz. Çevrimdışı yapılan kanal sayısını döner.
+func (s *Store) ClearStalePublishers(ctx context.Context, stale []LivePublisher) (int64, error) {
+	if len(stale) == 0 {
+		return 0, nil
+	}
+	ids := make([]int64, len(stale))
+	clients := make([]string, len(stale))
+	for i, p := range stale {
+		ids[i], clients[i] = p.ChannelID, p.ClientID
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE channels c SET live = false, publisher_client_id = NULL
+		FROM unnest($1::bigint[], $2::text[]) AS s(id, client_id)
+		WHERE c.id = s.id AND c.live AND c.publisher_client_id = s.client_id`, ids, clients)
+	return tag.RowsAffected(), err
+}
+
 // ReconcileLive, yayında görünen ama activeIDs içinde olmayan kanalları çevrimdışı yapar.
 // grace süresinden daha yeni başlamış yayınlara dokunmaz.
 func (s *Store) ReconcileLive(ctx context.Context, activeIDs []int64, grace time.Duration) (int64, error) {

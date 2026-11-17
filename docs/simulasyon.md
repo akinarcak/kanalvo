@@ -73,7 +73,7 @@ bir geliştirme ortamının yanında kalkabilir.
 
 ## Senaryolar
 
-Toplam 9 senaryo (`e2e/` altındaki 9 `Test…` işlevi; `TestMain` senaryo değildir).
+Toplam 10 senaryo (`e2e/` altındaki 10 `Test…` işlevi; `TestMain` senaryo değildir).
 
 | Test | Dosya | Ne sınar |
 |---|---|---|
@@ -86,6 +86,7 @@ Toplam 9 senaryo (`e2e/` altındaki 9 `Test…` işlevi; `TestMain` senaryo değ
 | `TestPanelPortIsOnlyOnLoopback` | `e2e/https_test.go` | `api`'nin 8002'si `127.0.0.1`'e bağlı; makinenin dış IPv4 adresinden bağlantı kurulamaz, aynı adresten Caddy'nin HTTPS portuna kurulur |
 | `TestLoginLockoutFollowsTheClientBehindTheProxy` | `e2e/https_test.go` | İkinci istemci (caddy kapsayıcısından) her istekte farklı uydurulmuş `X-Forwarded-For` ile 20 hatalı girişte 401, sonra 429 alır; bu makineden gelen istemci (uydurulmuş başlıkla da) kilitlenmez. Kilit vekilin değil istemcinin adresine uygulanır |
 | `TestPublishBeyondChannelQuotaIsRejectedBySRS` | `e2e/kota_test.go` | Kanal kotası yayın kabulünde eşzamanlı canlı kanal sınırıdır: kotası 2 olan yayıncının FFmpeg ile açılan üçüncü yayını SRS'ten reddedilir (FFmpeg bağlantısı kapanır, kanal çevrimdışı kalır); biri kapanınca üçüncü açılır; kota 1'e düşürülünce süren iki yayın sürer, yenisi reddedilir |
+| `TestPublisherReconnectsAfterSRSRestart` | `e2e/srs_yeniden_test.go` | **SRS çökmesi**: kotası 2 olan yayıncının iki kanalına, bağlantı koptukça 1 sn bekleyip yeniden bağlanan FFmpeg yayınları; origin SRS kapsayıcısı öldürülüp (`docker kill`, `on_unpublish` gelmez) başlatılır. İki yayının da SRS'in API'si yanıt verdikten en çok 5 sn sonra yeniden kabul edilmesi ve arada hiç "kanal zaten yayında"/kota reddi olmaması (API logundan sayılır); ardından aynı kanala gerçekten ikinci yayının yine reddedilmesi, süren yayınların değişmemesi. Ölçüm: düzeltmeden önce 13,6/22,5 sn ve 10/17 ret; sonra 0,1-0,6 sn ve 0 ret |
 
 ffprobe bulunmazsa görüntü çözen iki test (`TestTenantsAreIsolated`, `TestEdgeDisableAndControlPartition`)
 atlanır (`SKIP`); betik ffprobe yoksa hiç başlamaz.

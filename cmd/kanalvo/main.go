@@ -107,10 +107,11 @@ func serve(ctx context.Context) error {
 		// Uzak edge'in SRS yönetim API'si, nginx'inde anahtarla korunan /_srs yolundadır.
 		return srsapi.NewWithHeader(e.ControlURL+"/_srs", balancer.KeyHeader, e.Key)
 	}
-	sessions := session.New(st, srsFor, srsapi.New(cfg.SRSAPIURL), hlsSessionIdle, cfg.HLSTokenTTL)
+	originSRS := srsapi.New(cfg.SRSAPIURL)
+	sessions := session.New(st, srsFor, originSRS, hlsSessionIdle, cfg.HLSTokenTTL)
 
 	// Kontrol sunucusundaki SRS'lerin yetki sorguları ayrı, dışarıya açılmayan bir adreste dinlenir.
-	hook := hooks.New(st, signer, sessions, edges, time.Now)
+	hook := hooks.New(st, signer, sessions, edges, originSRS, time.Now)
 	internal := http.NewServeMux()
 	hook.Register(internal, cfg.HookSecret, localEdge)
 	mux := publicMux(st, signer, sessions, edges, hook, localEdge, cfg, publicBase, srsHLS)
