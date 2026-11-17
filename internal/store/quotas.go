@@ -5,7 +5,8 @@ import (
 	"errors"
 )
 
-// ErrQuotaExceeded: yayıncı, kotasının izin verdiğinden fazla kanal veya izleyici oluşturmaya çalıştı.
+// ErrQuotaExceeded: yayıncı, kotasının izin verdiğinden fazla kanal veya izleyici oluşturmaya ya da
+// aynı anda yayın açmaya çalıştı.
 var ErrQuotaExceeded = errors.New("store: kota aşıldı")
 
 // Quotas, bir yayıncının sınırlarıdır.

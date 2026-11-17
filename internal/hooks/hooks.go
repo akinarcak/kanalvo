@@ -147,7 +147,12 @@ func (h *Handler) onPublish(ctx context.Context, ev Event) int {
 	if ch.TenantStatus != "active" || subtle.ConstantTimeCompare([]byte(given), []byte(ch.StreamSecret)) != 1 {
 		return http.StatusForbidden
 	}
+	// Tekil yayın ve kanal kotası (eşzamanlı canlı kanal sayısı) aynı işlemde denetlenir.
 	started, err := h.store.MarkLive(ctx, id, ev.ClientID)
+	if errors.Is(err, store.ErrQuotaExceeded) {
+		log.Printf("hooks: kanal %d yayını reddedildi: yayıncı %d canlı kanal kotasında", id, ch.TenantID)
+		return http.StatusForbidden
+	}
 	if err != nil {
 		return failure(err)
 	}
